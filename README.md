@@ -6,7 +6,9 @@
 
 **リミッターやピーク保護はありません。** ブーストによりピークが 0 dBFS を超えることがあるため、必要に応じて後段にリミッターを置いてください。
 
-![AZMhybridAGC の画面。APPLIED GAIN と LOUDNESS・COMBINED RMS・HYBRID LEVEL、SILENCE・PLAYBACK・RESET・BYPASS、開いた状態の SETTINGS を表示](docs/gui.png)
+![AZMhybridAGC の画面。APPLIED GAIN と LOUDNESS・COMBINED RMS・HYBRID LEVEL、SILENCE・PLAYBACK・RESET、SETTINGS・BYPASS を表示](docs/gui.png)
+
+![SETTINGS を開いた画面。メーターの枠の中に Hybrid Target などのつまみを表示](docs/gui-settings.png)
 
 ## 導入
 
@@ -25,9 +27,9 @@ JSFX に対応したホストのエフェクト用フォルダに [`jsfx/AZMhybr
 
 画面上部の大きな数値は、実際に出力に適用されているゲインです。下の数値は入力の **LOUDNESS**、Calibration 適用後の **COMBINED RMS**、両者を混合した **HYBRID LEVEL** です。測定がまだできていないときは `--` と表示されます。
 
-`SETTINGS` の見出しをクリックすると、つまみのセクションを開閉します。ノブは上下ドラッグで調整し、ダブルクリックで初期値に戻ります。右クリックで数値入力、ホイールで微調整ができ、Shift を併用するとさらに細かく調整できます。ノブや欄にポインターを置くと、下部のバーに名前・値・説明を表示します。
+BYPASS の左の `SETTINGS` ボタンを押すと、メーターの枠の中がつまみに切り替わります（その間、APPLIED GAIN と SILENCE・PLAYBACK・RESET は隠れます）。もう一度押すと閉じます。ノブは上下ドラッグで調整し、ダブルクリックで初期値に戻ります。右クリックで数値入力、ホイールで微調整ができ、Shift を併用するとさらに細かく調整できます。ノブや欄にポインターを置くと、下部のバーに名前・値・説明を表示します。
 
-初期ウィンドウは 570 × 353 で、`SETTINGS` を開いた状態が収まる高さです。メーターの大きさは、`SETTINGS` の開閉に関係なく同じです。
+初期ウィンドウは 570 × 245 で、`SETTINGS` を開いても大きさは変わりません。
 
 ### SETTINGS
 

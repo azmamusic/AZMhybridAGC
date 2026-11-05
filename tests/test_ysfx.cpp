@@ -203,10 +203,10 @@ static void test_gui()
     Effect e;
     near(ysfx_slider_get_value(e.fx, 9), 0, 0, "settings are closed by default");
     e.run(1, -20);
-    std::vector<uint8_t> pixels(570 * 353 * 4);
+    std::vector<uint8_t> pixels(570 * 245 * 4);
     ysfx_gfx_config_t config{};
     config.pixel_width = 570;
-    config.pixel_height = 353;
+    config.pixel_height = 245;
     config.scale_factor = 1;
     config.pixels = pixels.data();
     ysfx_gfx_setup(e.fx, &config);
@@ -221,7 +221,7 @@ static void test_gui()
         std::string path = std::string(dir) + "/" + name + ".ppm";
         FILE *file = std::fopen(path.c_str(), "wb");
         check(file != nullptr, "open GUI render");
-        std::fprintf(file, "P6\n570 353\n255\n");
+        std::fprintf(file, "P6\n570 245\n255\n");
         for (size_t i = 0; i < pixels.size(); i += 4) {
             std::fputc(pixels[i + 2], file);
             std::fputc(pixels[i + 1], file);
@@ -234,7 +234,7 @@ static void test_gui()
     const double closed_meter_h = e.var("pl_h");
     const double closed_meter_y = e.var("pl_y");
     check(closed_meter_h > 0, "meter has a height");
-    // The pointer coordinates below are in design units (570 x 353 window, scale 1).
+    // The pointer coordinates below are in design units (570 x 245 window, scale 1).
     click(470, 31);
     near(ysfx_slider_get_value(e.fx, 8), 1, 0, "bypass button");
     click(470, 31);
@@ -245,7 +245,7 @@ static void test_gui()
     click(100, 137);
     e.run(0.01, -20);
     check(e.var("have_measurement") == 0, "reset button");
-    click(60, 212);
+    click(362, 31);
     near(ysfx_slider_get_value(e.fx, 9), 1, 0, "open settings");
     frame(0, 0, false);
     save("open");
@@ -253,14 +253,14 @@ static void test_gui()
     near(e.var("pl_y"), closed_meter_y, 0, "meter position is the same with settings open");
     // Each dial must respond independently to a vertical drag.
     for (int i = 0; i < 6; ++i) {
-        const int x = int(44 + 466.0 / 6 * i + (i >= 4 ? 16 : 0) + 38);
+        const int x = int(60 + 434.0 / 6 * i + (i >= 4 ? 16 : 0) + 38);
         const double before = ysfx_slider_get_value(e.fx, i);
-        frame(x, 271, true);
-        frame(x, 286, true);
-        frame(x, 286, false);
+        frame(x, 100, true);
+        frame(x, 115, true);
+        frame(x, 115, false);
         check(ysfx_slider_get_value(e.fx, i) < before, "knob drag changes its slider");
     }
-    click(60, 212);
+    click(362, 31);
     near(ysfx_slider_get_value(e.fx, 9), 0, 0, "close settings");
     frame(0, 0, false);
     near(e.var("pl_h"), closed_meter_h, 0, "meter height is the same after closing settings");
