@@ -7,7 +7,7 @@ tags:gain loudness dynamics stereo
 
 options:no_meter
 
-slider1:target=-16<-36,-6,0.1>-Hybrid Target (dB)
+slider1:target=-15<-36,-6,0.1>-Hybrid Target (dB)
 slider2:push_down=6<0,6,0.1>-Push Down (dB)
 slider3:pull_up=3<0,6,0.1>-Pull Up (dB)
 // slider4 was Smoothing (now fixed at 0.4 s). Do not reuse the number: saved projects may still hold its old value.
