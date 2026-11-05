@@ -4,8 +4,8 @@ tags:gain loudness dynamics stereo
 options:no_meter
 
 slider1:target=-16<-36,-6,0.1>-Hybrid Target (dB)
-slider2:push_down=6<0,6,0.1>-Push Down (dB)
-slider3:pull_up=6<0,6,0.1>-Pull Up (dB)
+slider2:push_down=3<0,6,0.1>-Push Down (dB)
+slider3:pull_up=3<0,6,0.1>-Pull Up (dB)
 slider4:smoothing=3<0.1,30,0.1>-Smoothing (s)
 slider5:rms_cal=0<-12,12,0.1>-RMS Calibration (dB)
 slider6:rms_ratio=50<0,100,1>-RMS Ratio (%)
