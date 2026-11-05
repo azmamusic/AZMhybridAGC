@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1000" height="430" viewBox="0 0 1000 430" role="img" aria-labelledby="title desc">
   <title id="title">AZMhybridAGC signal flow</title>
-  <desc id="desc">The stereo input is measured as K-weighted power and plain power in overlapping 400 ms blocks. Gated histograms give Loudness and RMS, which are mixed into a hybrid level. The target gain is averaged, interpolated, and applied equally to both channels.</desc>
+  <desc id="desc">The stereo input is measured as K-weighted power and plain power in overlapping 400 ms blocks. Gated histograms give Loudness and RMS, and the latest 400 ms window is blended in by Short Mix; these are mixed into a hybrid level. The target gain is averaged over 0.4 seconds, interpolated at a speed set by Push Down and Pull Up, and applied equally to both channels.</desc>
   <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M0 0L8 4 0 8Z" fill="#5f6b8a"/></marker></defs>
   <rect width="1000" height="430" rx="16" fill="#f3f5f9"/>
   <g font-family="Arial, sans-serif" fill="#1f2e54" text-anchor="middle">
@@ -31,8 +31,8 @@
       <text x="75" y="174">stereo, full band</text><text x="229" y="111">ITU-R BS.1770</text><text x="229" y="237">before filtering</text>
       <text x="409" y="111">400 ms / 100 ms hop</text><text x="409" y="237">400 ms / 100 ms hop</text>
       <text x="605" y="194">-70 LUFS / -10 LU</text><text x="605" y="211">0.1 LU histogram</text>
-      <text x="776" y="195">Ratio / Calibration</text><text x="919" y="195">Push / Pull limit</text>
-      <text x="919" y="317">Smoothing</text><text x="765" y="317">100 ms interpolation</text><text x="605" y="317">L/R × same gain</text>
+      <text x="776" y="192">Ratio / Calibration</text><text x="776" y="207">+ Short Mix</text><text x="919" y="195">Push / Pull limit</text>
+      <text x="919" y="317">0.4 s smoothing</text><text x="765" y="317">100 ms, limit-scaled</text><text x="605" y="317">L/R × same gain</text>
       <text x="305" y="397">Input L/R × linear gain → output L/R</text>
     </g>
   </g>

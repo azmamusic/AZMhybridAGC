@@ -87,6 +87,8 @@ static void test_measurement_and_mix(double rate)
 {
     Effect e(rate);
     e.set(7, 0);
+    e.set(5, 0);
+    e.set(6, 50);
     e.run(0.39, -20);
     check(e.var("have_measurement") == 0, "no complete 400 ms block yet");
     e.run(0.61, -20);
@@ -112,21 +114,23 @@ static void test_smoothing_and_limits()
     Effect e;
     e.set(7, 0);
     e.set(6, 100);
+    e.set(5, 0);
+    e.set(3, 6);
+    e.set(11, 0);
     e.set(1, -16);
-    e.set(4, 3);
     e.run(0.4, -20);
     near(e.var("gain_db"), 0, 0.01, "no jump at first measurement");
+    e.run(0.2, -20);
+    near(e.var("gain_db"), 3, 0.05, "gain follows the 0.4 second smoothing window");
     e.run(1.0, -20);
-    near(e.var("gain_db"), 2, 0.03, "gain follows the three-second smoothing window");
-    e.run(4.0, -20);
-    const double rms = -20 + 10 * std::log10((1 + 0.25) / 2);
-    near(e.var("gain_db"), -16 - rms, 0.1, "gain converges to target");
+    near(e.var("gain_db"), 6, 0.05, "gain converges to the boost limit");
     e.set(3, 2);
     e.run(4.0, -20);
     near(e.var("gain_db"), 2, 0.1, "boost limit");
     Effect loud;
     loud.set(7, 0);
     loud.set(6, 100);
+    loud.set(5, 0);
     loud.set(2, 2);
     loud.run(4, -5);
     near(loud.var("gain_db"), -2, 0.03, "attenuation limit");
@@ -135,6 +139,87 @@ static void test_smoothing_and_limits()
     very_quiet.run(1, -90);
     check(very_quiet.var("have_measurement") == 0, "absolute gate rejects very quiet input");
     near(very_quiet.var("gain_db"), 0, 0.001, "no boost before gated measurement");
+}
+
+static void test_defaults()
+{
+    Effect e;
+    near(ysfx_slider_get_value(e.fx, 1), 6, 0, "default Push Down");
+    near(ysfx_slider_get_value(e.fx, 2), 3, 0, "default Pull Up");
+    near(ysfx_slider_get_value(e.fx, 4), 3, 0, "default Calibration");
+    near(ysfx_slider_get_value(e.fx, 5), 40, 0, "default Ratio");
+    near(ysfx_slider_get_value(e.fx, 10), 25, 0, "default Short Mix");
+}
+
+// A larger limit moves the gain faster, but a limit of 0 must still let the gain return.
+static void test_limit_speed()
+{
+    auto gain_after = [](double push_down, double pull_up, double seconds, double rms_db) {
+        Effect e;
+        e.set(7, 0);
+        e.set(6, 100);
+        e.set(5, 3.5);
+        e.set(11, 0);
+        e.set(2, push_down);
+        e.set(3, pull_up);
+        e.run(seconds, rms_db);
+        return e.var("gain_db");
+    };
+    // The target boost is about 2.5 dB, below both limits.
+    const double fast_up = gain_after(6, 6, 0.9, -20);
+    const double slow_up = gain_after(6, 3, 0.9, -20);
+    check(slow_up > 0.1 && slow_up < fast_up - 0.1, "Pull Up scales the speed of boosting");
+    near(gain_after(6, 3, 12, -20), 2.5, 0.1, "slow boost still reaches the target");
+    // The target cut is about 2.5 dB, below both limits.
+    const double fast_down = gain_after(6, 6, 0.7, -14);
+    const double slow_down = gain_after(3.6, 6, 0.7, -14);
+    check(slow_down < -0.1 && slow_down > fast_down + 0.1, "Push Down scales the speed of cutting");
+
+    Effect e;
+    e.set(7, 0);
+    e.set(6, 100);
+    e.set(5, 0);
+    e.set(11, 0);
+    e.run(6, -5);
+    check(e.var("gain_db") < -5.5, "test has applied cut");
+    e.set(2, 0);
+    e.run(15, -5);
+    near(e.var("gain_db"), 0, 0.1, "gain returns to 0 dB even with Push Down at 0");
+}
+
+static void test_short_mix()
+{
+    auto gain_after = [](double short_mix, double loud_db, double loud_seconds) {
+        Effect e;
+        e.set(7, 0);
+        e.set(6, 100);
+        e.set(5, 0);
+        e.set(11, short_mix);
+        e.run(20, -24);
+        e.run(loud_seconds, loud_db);
+        return e.var("gain_db");
+    };
+    // Heavy section after a long quiet one: the short window pulls the gain down sooner.
+    const double slow_down = gain_after(0, -12, 2);
+    const double fast_down = gain_after(100, -12, 2);
+    check(fast_down < slow_down - 1, "Short Mix reacts to a sudden louder section");
+    // Quiet section after a long loud one: the relative gate drops it from the cumulative level,
+    // so only the short window brings the gain back.
+    Effect cumulative;
+    Effect shortterm;
+    for (Effect *e : {&cumulative, &shortterm}) {
+        e->set(7, 0);
+        e->set(6, 100);
+        e->set(5, 0);
+        e->set(3, 6);
+        e->run(20, -10);
+    }
+    cumulative.set(11, 0);
+    shortterm.set(11, 100);
+    cumulative.run(4, -30);
+    shortterm.run(4, -30);
+    check(shortterm.var("gain_db") > cumulative.var("gain_db") + 1,
+          "Short Mix lets the gain recover after a quiet section");
 }
 
 static void test_gate_and_silence()
@@ -252,13 +337,14 @@ static void test_gui()
     near(e.var("pl_h"), closed_meter_h, 0, "meter height is the same with settings open");
     near(e.var("pl_y"), closed_meter_y, 0, "meter position is the same with settings open");
     // Each dial must respond independently to a vertical drag.
+    const int knob_sliders[] = {0, 1, 2, 10, 4, 5};
     for (int i = 0; i < 6; ++i) {
         const int x = int(60 + 434.0 / 6 * i + (i >= 4 ? 16 : 0) + 38);
-        const double before = ysfx_slider_get_value(e.fx, i);
+        const double before = ysfx_slider_get_value(e.fx, knob_sliders[i]);
         frame(x, 100, true);
         frame(x, 115, true);
         frame(x, 115, false);
-        check(ysfx_slider_get_value(e.fx, i) < before, "knob drag changes its slider");
+        check(ysfx_slider_get_value(e.fx, knob_sliders[i]) < before, "knob drag changes its slider");
     }
     click(362, 31);
     near(ysfx_slider_get_value(e.fx, 9), 0, 0, "close settings");
@@ -288,7 +374,10 @@ int main()
     test_measurement_and_mix(44101);
     test_measurement_and_mix(48000);
     test_measurement_and_mix(96000);
+    test_defaults();
     test_smoothing_and_limits();
+    test_limit_speed();
+    test_short_mix();
     test_gate_and_silence();
     test_playback_reset();
     test_silence_timing_and_rate_change();
