@@ -12,12 +12,12 @@ slider2:push_down=6<0,6,0.1>-Push Down (dB)
 slider3:pull_up=3<0,6,0.1>-Pull Up (dB)
 // slider4 was Smoothing (now fixed at 0.4 s). Do not reuse the number: saved projects may still hold its old value.
 slider5:rms_cal=3<-12,12,0.1>-RMS Calibration (dB)
-slider6:rms_ratio=40<0,100,1>-RMS Ratio (%)
+slider6:rms_ratio=30<0,100,1>-RMS Ratio (%)
 slider7:reset_silence=1<0,1,1{Off,On}>-Reset on Silence
 slider8:reset_play=0<0,1,1{Off,On}>-Reset on Playback
 slider9:bypass=0<0,1,1{Off,On}>-Bypass
 slider10:settings_open=0<0,1,1{Closed,Open}>-Settings
-slider11:short_mix=25<0,100,1>-Short Mix (%)
+slider11:short_mix=50<0,100,1>-Short Mix (%)
 
 in_pin:Left
 in_pin:Right
@@ -35,6 +35,7 @@ BR = 2600;
 FL1 = 4000; FL2 = 4002; FR1 = 4004; FR2 = 4006;
 SM = 4100;
 SMOOTH_N = 12; // 1.2 s of 100 ms hops
+SHORT_MIX_MAX = 0.3; // Short Mix 100% applies 30% of the short offset
 SHORT_RELEASE_COEF = 1-exp(-0.1/2); // 2 s release of the short level, per 100 ms hop
 HK = 4500; HR = 4504; HS = 4508;
 LOG10 = log(10);
@@ -150,7 +151,7 @@ function update_target() local(mix sm level delta) (
     hybrid_db = (1-mix)*loudness_db + mix*(rms_db+rms_cal);
     level = hybrid_db;
     have_short ? (
-      sm = bound(short_mix*0.01,0,1);
+      sm = bound(short_mix*0.01,0,1)*SHORT_MIX_MAX;
       short_db = (1-mix)*short_loudness_db + mix*(short_rms_db+rms_cal);
       delta = short_db - hybrid_db;
       !short_env_valid || delta > short_env ? short_env = delta : short_env += (delta-short_env)*SHORT_RELEASE_COEF;
@@ -346,8 +347,8 @@ pdef(1, -36, -6, -16, 0.1, 0, 1, "dB", "Hybrid Target", "Hybrid Target", "Level 
 pdef(2, 0, 6, 6, 0.1, 0, 1, "dB", "Push Down", "Push Down", "Maximum cut above the target. Larger values also move the gain faster", 0);
 pdef(3, 0, 6, 3, 0.1, 0, 1, "dB", "Pull Up", "Pull Up", "Maximum boost below the target. Larger values also move the gain faster", 0);
 pdef(5, -12, 12, 3, 0.1, 0, 1, "dB", "Calibration", "RMS Calibration", "Offset added to the RMS before it is mixed with Loudness", 1);
-pdef(6, 0, 100, 40, 1, 0, 0, "%", "Ratio", "RMS Ratio", "0% follows Loudness only; 100% follows RMS only", 0);
-pdef(11, 0, 100, 25, 1, 0, 0, "%", "Short Mix", "Short Mix", "0% follows the cumulative level; 100% follows the latest 400 ms", 0);
+pdef(6, 0, 100, 30, 1, 0, 0, "%", "Ratio", "RMS Ratio", "0% follows Loudness only; 100% follows RMS only", 0);
+pdef(11, 0, 100, 50, 1, 0, 0, "%", "Short Mix", "Short Mix", "0% follows the cumulative level; 100% blends in the latest 400 ms at up to 30%", 0);
 
 // つまみの並び順（1〜6）に対応するパラメーター番号
 function pid(pos) ( pos == 4 ? 11 : pos; );
