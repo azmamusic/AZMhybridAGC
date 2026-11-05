@@ -1,0 +1,390 @@
+desc:AZMhybridAGC
+tags:gain loudness dynamics stereo
+
+options:no_meter
+
+slider1:target=-16<-36,-6,0.1>-Hybrid Target (dB)
+slider2:push_down=6<0,6,0.1>-Push Down (dB)
+slider3:pull_up=6<0,6,0.1>-Pull Up (dB)
+slider4:smoothing=3<0.1,30,0.1>-Smoothing (s)
+slider5:rms_cal=0<-12,12,0.1>-RMS Calibration (dB)
+slider6:rms_ratio=50<0,100,1>-RMS Ratio (%)
+slider7:reset_silence=1<0,1,1{Off,On}>-Reset on Silence
+slider8:reset_play=0<0,1,1{Off,On}>-Reset on Playback
+slider9:bypass=0<0,1,1{Off,On}>-Bypass
+slider10:settings_open=0<0,1,1{Closed,Open}>-Settings
+
+in_pin:Left
+in_pin:Right
+out_pin:Left
+out_pin:Right
+
+@init
+ext_noinit = 1;
+gfx_ext_retina = 1;
+
+N_BINS = 1300;
+BN = 0;
+BK = 1300;
+BR = 2600;
+FL1 = 4000; FL2 = 4002; FR1 = 4004; FR2 = 4006;
+SM = 4100;
+HK = 4500; HR = 4504; HS = 4508;
+LOG10 = log(10);
+EPS = pow(10,-30);
+PI = 4*atan(1);
+
+function bound(v lo hi) ( min(max(v,lo),hi); );
+function db_power(p) ( 10*log(max(p,EPS))/LOG10; );
+
+// Two K-weighting stages, recalculated for the host sample rate.
+function make_filters() local(k vh vb q a0) (
+  k = tan(PI*1681.974450955533/srate);
+  vh = pow(10,3.999843853973347/20);
+  vb = pow(vh,0.4996667741545416);
+  q = 0.7071752369554196;
+  a0 = 1+k/q+k*k;
+  sh_b0 = (vh+vb*k/q+k*k)/a0;
+  sh_b1 = 2*(k*k-vh)/a0;
+  sh_b2 = (vh-vb*k/q+k*k)/a0;
+  sh_a1 = 2*(k*k-1)/a0;
+  sh_a2 = (1-k/q+k*k)/a0;
+  k = tan(PI*38.13547087602444/srate);
+  q = 0.5003270373238773;
+  a0 = 1+k/q+k*k;
+  hp_a1 = 2*(k*k-1)/a0;
+  hp_a2 = (1-k/q+k*k)/a0;
+);
+
+function biquad(x mem b0 b1 b2 a1 a2) local(y) (
+  y = b0*x + mem[0];
+  mem[0] = b1*x-a1*y+mem[1];
+  mem[1] = b2*x-a2*y;
+  y;
+);
+
+function reset_measurement() local(i) (
+  memset(BN,0,N_BINS);
+  memset(BK,0,N_BINS);
+  memset(BR,0,N_BINS);
+  memset(HK,0,12);
+  total_k = total_n = 0;
+  window_k = window_r = window_samples = 0;
+  hop_k = hop_r = hop_samples = hop_phase = 0;
+  hop_index = hop_count = 0;
+  have_measurement = 0;
+  measurement_fault = 0;
+  loudness_db = rms_db = hybrid_db = 0;
+  target_gain = 0;
+  sm_pos = 0;
+  i = 0;
+  loop(300, SM[i] = gain_db; i += 1;);
+  gain_step = 0;
+  silence_samples = 0;
+  silence_latched = 0;
+);
+
+function reset_rate() (
+  last_srate = srate;
+  memset(FL1,0,8);
+  make_filters();
+  reset_measurement();
+  bypass_coef = 1-exp(-1/max(0.005*srate,1));
+);
+
+// The histogram keeps all absolute-gated blocks, including blocks currently
+// below the relative gate, so past blocks can be selected again later.
+function add_block(k_power r_power) local(l idx threshold i n ks rs) (
+  l = -0.691 + db_power(k_power);
+  l >= 60 ? (
+    measurement_fault = 1;
+  ) : l >= -70 ? (
+    idx = bound(floor((l+70)*10),0,N_BINS-1);
+    BN[idx] += 1;
+    BK[idx] += k_power;
+    BR[idx] += r_power;
+    total_n += 1;
+    total_k += k_power;
+    threshold = max(-70,-0.691+db_power(total_k/total_n)-10);
+    i = n = ks = rs = 0;
+    loop(N_BINS,
+      -70+(i+0.5)*0.1 >= threshold ? (
+        n += BN[i];
+        ks += BK[i];
+        rs += BR[i];
+      );
+      i += 1;
+    );
+    n > 0 ? (
+      loudness_db = -0.691+db_power(ks/n);
+      rms_db = db_power(rs/n);
+      have_measurement = 1;
+    );
+  );
+);
+
+function update_target() local(mix) (
+  have_measurement && !measurement_fault ? (
+    mix = bound(rms_ratio*0.01,0,1);
+    hybrid_db = (1-mix)*loudness_db + mix*(rms_db+rms_cal);
+    target_gain = bound(target-hybrid_db,-push_down,pull_up);
+  ) : (
+    target_gain = 0;
+  );
+);
+
+function advance_smoothing() local(count i p sum goal) (
+  update_target();
+  goal = target_gain;
+  quiet ? goal = min(goal,gain_db);
+  measurement_fault ? goal = gain_db;
+  SM[sm_pos] = goal;
+  sm_pos = (sm_pos+1)%300;
+  count = bound(floor(smoothing*10+0.5),1,300);
+  i = sum = 0;
+  p = sm_pos;
+  loop(count,
+    p = (p+299)%300;
+    sum += SM[p];
+    i += 1;
+  );
+  smooth_goal = sum/count;
+  gain_step = (smooth_goal-gain_db)/max(srate*0.1,1);
+  measurement_fault ? gain_step = 0;
+);
+
+function finish_hop() local(did_reset raw_k raw_r raw_samples) (
+  quiet = hop_r/max(hop_samples,1) < pow(10,-6);
+  quiet ? (
+    silence_samples += hop_samples;
+  ) : (
+    silence_samples = 0;
+    silence_latched = 0;
+  );
+  did_reset = 0;
+  reset_silence >= 0.5 && !silence_latched && silence_samples >= 5*srate ? (
+    reset_measurement();
+    silence_latched = 1;
+    quiet = 1;
+    did_reset = 1;
+  );
+  !did_reset ? (
+    hop_count >= 4 ? (
+      window_k -= HK[hop_index];
+      window_r -= HR[hop_index];
+      window_samples -= HS[hop_index];
+    ) : hop_count += 1;
+    HK[hop_index] = hop_k;
+    HR[hop_index] = hop_r;
+    HS[hop_index] = hop_samples;
+    window_k += hop_k;
+    window_r += hop_r;
+    window_samples += hop_samples;
+    hop_index = (hop_index+1)%4;
+    hop_count >= 4 && window_samples > 0 && !measurement_fault ? (
+      raw_k = max(window_k/window_samples,0);
+      raw_r = max(window_r/window_samples,0);
+      add_block(raw_k,raw_r);
+    );
+    hop_k = hop_r = hop_samples = 0;
+  );
+  advance_smoothing();
+);
+
+gain_db = gain_step = 0;
+bypass_mix = bypass >= 0.5;
+applied_gain = 1;
+quiet = 1;
+reset_request = 0;
+last_playing = (play_state&1) != 0;
+reset_rate();
+
+@slider
+// The audio thread reads slider values when it processes the next block/hop.
+
+@block
+srate != last_srate ? reset_rate();
+playing_now = (play_state&1) != 0;
+reset_play >= 0.5 && playing_now && !last_playing ? reset_measurement();
+last_playing = playing_now;
+reset_request ? (
+  reset_measurement();
+  reset_request = 0;
+);
+
+@sample
+in_l = spl0;
+in_r = spl1;
+// Excessive or non-finite input must not corrupt the cumulative statistics.
+(in_l != in_l || in_r != in_r || abs(in_l) > 1000000 || abs(in_r) > 1000000) ? (
+  measurement_fault = 1;
+  gain_step = 0;
+) : (
+  kl = biquad(in_l,FL1,sh_b0,sh_b1,sh_b2,sh_a1,sh_a2);
+  kr = biquad(in_r,FR1,sh_b0,sh_b1,sh_b2,sh_a1,sh_a2);
+  kl = biquad(kl,FL2,1,-2,1,hp_a1,hp_a2);
+  kr = biquad(kr,FR2,1,-2,1,hp_a1,hp_a2);
+  hop_k += kl*kl+kr*kr;
+  hop_r += (in_l*in_l+in_r*in_r)*0.5;
+  hop_samples += 1;
+  hop_phase += 10;
+  hop_phase >= srate ? (
+    hop_phase -= srate;
+    finish_hop();
+  );
+);
+(!quiet || gain_step < 0) && !measurement_fault ? gain_db += gain_step;
+gain_db = bound(gain_db,-6,6);
+bypass_mix += ((bypass >= 0.5)-bypass_mix)*bypass_coef;
+applied_gain = 1+(pow(10,gain_db/20)-1)*(1-bypass_mix);
+spl0 = in_l*applied_gain;
+spl1 = in_r*applied_gain;
+
+@gfx 500 300
+// UI coordinates are proportional to width; DSP state is read-only here.
+ui_s = gfx_w/500;
+ui_h = gfx_h/ui_s;
+ui_open = settings_open >= 0.5;
+ui_plot_h = max(60,ui_h-(ui_open ? 182 : 85));
+ui_meter_y = 40+ui_plot_h;
+ui_settings_y = ui_meter_y+29;
+ui_left = mouse_cap&1;
+ui_pressed = ui_left && !ui_last_left;
+ui_released = !ui_left && ui_last_left;
+ui_mx = mouse_x/ui_s;
+ui_my = mouse_y/ui_s;
+
+function color(c a) (
+  gfx_set(((c>>16)&255)/255,((c>>8)&255)/255,(c&255)/255,a);
+);
+function rect(x y w h c) (
+  color(c,1); gfx_rect(x*ui_s,y*ui_s,w*ui_s,h*ui_s,1);
+);
+function roundrect(x y w h r c) (
+  color(c,1);
+  gfx_rect((x+r)*ui_s,y*ui_s,(w-2*r)*ui_s,h*ui_s,1);
+  gfx_rect(x*ui_s,(y+r)*ui_s,w*ui_s,(h-2*r)*ui_s,1);
+  gfx_circle((x+r)*ui_s,(y+r)*ui_s,r*ui_s,1,1);
+  gfx_circle((x+w-r)*ui_s,(y+r)*ui_s,r*ui_s,1,1);
+  gfx_circle((x+r)*ui_s,(y+h-r)*ui_s,r*ui_s,1,1);
+  gfx_circle((x+w-r)*ui_s,(y+h-r)*ui_s,r*ui_s,1,1);
+);
+function font(size) ( gfx_setfont(1,"Arial",max(1,floor(size*ui_s))); );
+function text(x y str c size) (
+  color(c,1); font(size); gfx_x=x*ui_s; gfx_y=y*ui_s; gfx_drawstr(str);
+);
+function centered(x y w h str c size) local(tw th) (
+  color(c,1); font(size); gfx_measurestr(str,tw,th);
+  gfx_x=(x+w*0.5)*ui_s-tw*0.5; gfx_y=(y+h*0.5)*ui_s-th*0.5;
+  gfx_drawstr(str);
+);
+function inside(x y w h) ( ui_mx>=x && ui_mx<x+w && ui_my>=y && ui_my<y+h; );
+function set_slider(i v) (
+  slider(i) = v;
+  sliderchange(slider(i));
+  slider_automate(slider(i));
+);
+function ui_button(x y w h str on) (
+  roundrect(x,y,w,h,4,on ? 0xFFF8E9 : 0xFFFFFF);
+  color(on ? 0xE5A331 : 0xADB9CB,1);
+  gfx_circle((x+10)*ui_s,(y+h*0.5)*ui_s,2.2*ui_s,1,1);
+  centered(x+7,y,w-7,h,str,on ? 0x99630A : 0x53647F,8);
+);
+function ui_knob(i x y lo hi caption val unit) local(cx cy n angle j a px py) (
+  centered(x,y,72,13,caption,0x1F2E54,9);
+  cx=x+36; cy=y+33;
+  color(0xDFE4EE,1);
+  j=0;
+  loop(48,
+    a=-2.35619449+j*4.71238898/47;
+    gfx_circle((cx+sin(a)*14)*ui_s,(cy-cos(a)*14)*ui_s,2*ui_s,1,1);
+    j+=1;
+  );
+  n=bound((val-lo)/(hi-lo),0,1);
+  color(0xF0B13A,1);
+  j=0;
+  loop(max(1,floor(n*47)+1),
+    a=-2.35619449+j*4.71238898/47;
+    gfx_circle((cx+sin(a)*14)*ui_s,(cy-cos(a)*14)*ui_s,2*ui_s,1,1);
+    j+=1;
+  );
+  color(0x1F2E54,1); gfx_circle(cx*ui_s,cy*ui_s,10*ui_s,1,1);
+  angle=-2.35619449+n*4.71238898;
+  color(0xFFFFFF,1);
+  gfx_line((cx+sin(angle)*2)*ui_s,(cy-cos(angle)*2)*ui_s,
+           (cx+sin(angle)*7)*ui_s,(cy-cos(angle)*7)*ui_s,1);
+  sprintf(#ui_val,"%.1f %s",val,unit);
+  i==6 ? sprintf(#ui_val,"%.0f %%",val);
+  centered(x,y+51,72,15,#ui_val,0x5F6B8A,9);
+  ui_pressed && inside(x,y,72,68) ? (
+    ui_drag=i; ui_drag_y=ui_my; ui_drag_val=val;
+  );
+  ui_drag==i && ui_left ? (
+    ui_v = bound(ui_drag_val+(ui_drag_y-ui_my)*(hi-lo)/150,lo,hi);
+    ui_quantum = i==6 ? 1 : 0.1;
+    set_slider(i,bound(lo+floor((ui_v-lo)/ui_quantum+0.5)*ui_quantum,lo,hi));
+  );
+);
+
+gfx_set(1,1,1,1); gfx_rect(0,0,gfx_w,gfx_h,1);
+text(12,10,"AZMhybridAGC",0x1F2E54,17);
+roundrect(416,9,72,24,12,0x1F2E54);
+roundrect(418,11,68,20,10,bypass>=0.5 ? 0xFFF8E9 : 0xFFFFFF);
+color(bypass>=0.5 ? 0xE5A331 : 0xADB9CB,1);
+gfx_circle(426*ui_s,21*ui_s,3*ui_s,1,1);
+centered(425,9,61,24,"BYPASS",0x1F2E54,9);
+ui_pressed && inside(416,9,72,24) ? set_slider(9,1-bypass);
+
+roundrect(12,40,476,ui_plot_h,8,0x1F2E54);
+ui_btn_h=(ui_plot_h-14)/3;
+ui_button(19,47,77,ui_btn_h,"SILENCE",reset_silence>=0.5);
+ui_button(19,47+ui_btn_h,77,ui_btn_h,"PLAYBACK",reset_play>=0.5);
+ui_button(19,47+2*ui_btn_h,77,ui_btn_h,"RESET",0);
+ui_pressed && inside(19,47,77,ui_btn_h) ? set_slider(7,1-reset_silence);
+ui_pressed && inside(19,47+ui_btn_h,77,ui_btn_h) ? set_slider(8,1-reset_play);
+ui_pressed && inside(19,47+2*ui_btn_h,77,ui_btn_h) ? reset_request=1;
+
+centered(105,68+max(25,ui_plot_h-42)*0.5-46,383,16,"APPLIED GAIN",0xA4B4D2,9);
+sprintf(#ui_gain,"%+.2f",db_power(applied_gain*applied_gain));
+font(54); gfx_measurestr(#ui_gain,ui_gain_w,ui_gain_h);
+ui_gain_x=105+(383-(ui_gain_w/ui_s+23))*0.5;
+centered(ui_gain_x,68,ui_gain_w/ui_s,max(25,ui_plot_h-42),#ui_gain,0xFFFFFF,54);
+text(ui_gain_x+ui_gain_w/ui_s+5,68+max(25,ui_plot_h-42)*0.5+10,"dB",0xD3DCEF,13);
+measurement_fault ? centered(105,ui_meter_y-18,383,12,"MEASUREMENT ERROR - RESET",0xF0B13A,9);
+
+ui_read_y=ui_meter_y+8;
+text(12,ui_read_y+5,"LOUDNESS",0xD3921E,9);
+text(159,ui_read_y+5,"COMBINED RMS",0x687994,9);
+text(337,ui_read_y+5,"HYBRID LEVEL",0x687994,9);
+roundrect(71,ui_read_y,70,21,4,0xF0B13A);
+roundrect(245,ui_read_y,70,21,4,0x1F2E54);
+roundrect(418,ui_read_y,70,21,4,0xF1F3F8);
+rect(150,ui_read_y,1,21,0xE8ECF3);
+rect(325,ui_read_y,1,21,0xE8ECF3);
+have_measurement ? (
+  sprintf(#ui_l,"%.1f LUFS",loudness_db);
+  sprintf(#ui_r,"%.1f dBFS",rms_db+rms_cal);
+  sprintf(#ui_h,"%.1f dB",hybrid_db);
+) : (
+  strcpy(#ui_l,"--"); strcpy(#ui_r,"--"); strcpy(#ui_h,"--");
+);
+centered(71,ui_read_y,70,21,#ui_l,0x1F2E54,9);
+centered(245,ui_read_y,70,21,#ui_r,0xFFFFFF,9);
+centered(418,ui_read_y,70,21,#ui_h,0x53617B,9);
+
+ui_open ? strcpy(#ui_head,"v  SETTINGS") : strcpy(#ui_head,">  SETTINGS");
+text(12,ui_settings_y+5,#ui_head,0x1F2E54,10);
+rect(85,ui_settings_y+11,403,1,0xE5E9F1);
+ui_pressed && inside(12,ui_settings_y,100,24) ? set_slider(10,1-settings_open);
+ui_open ? (
+  text(12,ui_settings_y+25,"BEHAVIOR",0x687994,8);
+  text(340,ui_settings_y+25,"RMS",0x687994,8);
+  ui_knob(1,12,ui_settings_y+38,-36,-6,"Hybrid Target",target,"dB");
+  ui_knob(2,91,ui_settings_y+38,0,6,"Push Down",push_down,"dB");
+  ui_knob(3,170,ui_settings_y+38,0,6,"Pull Up",pull_up,"dB");
+  ui_knob(4,249,ui_settings_y+38,0.1,30,"Smoothing",smoothing,"s");
+  ui_knob(5,328,ui_settings_y+38,-12,12,"Calibration",rms_cal,"dB");
+  ui_knob(6,407,ui_settings_y+38,0,100,"Ratio",rms_ratio,"%");
+);
+ui_released ? ui_drag=0;
+ui_last_left=ui_left;
