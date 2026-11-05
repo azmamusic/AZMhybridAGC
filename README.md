@@ -24,6 +24,8 @@
 
 JSFX に対応したホストのエフェクト用フォルダに [`jsfx/AZMhybridAGC.jsfx`](jsfx/AZMhybridAGC.jsfx) をコピーしてください。フォルダの場所や追加方法は使用するホストの案内を参照してください。
 
+VST として使用する場合は [ysfx](https://www.realinks.net/links/ysfx/) を使用してください。
+
 ## 使い方
 
 基本的には挿しっぱなしで大丈夫です。もし微調整を行いたい場合は以下に説明する内容に従って調整してください。
