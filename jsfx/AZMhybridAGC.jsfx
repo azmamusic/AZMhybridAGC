@@ -199,6 +199,555 @@ reset_request = 0;
 last_playing = (play_state&1) != 0;
 reset_rate();
 
+// ---- GUI（@gfx から呼ぶ。AZMbeziExp の GUI と同じ仕様） ----
+// @gfx は @sample と別スレッドで動く。DSP 側の変数名を書き換えないこと。
+// DSP と共有してよいのは slider 変数と、表示のために読むだけの値・reset_request だけ。
+// 関数内の一時変数は必ず local() にする。
+// EEL2 の識別子は大文字小文字を区別しない（S と s は同じ）ので、S を使う関数に s という名前の引数は付けない。
+
+SS = 2; // 画面外バッファに SS 倍の解像度で描き、縮小して表示する（スーパーサンプリングによるアンチエイリアス）
+buf_w = buf_h = 0;
+
+// 設計サイズ。S = 1 のとき、ホストの初期ウィンドウ（@gfx の値）と一致する。
+// 高さは Settings を開いた状態を基準にし、メーターの大きさは開閉に関係なく同じにする。
+BW = 570; BH = 353;
+MT_H = 104; // メーター（ダークパネル）の高さ。Settings の開閉に関係なく一定
+
+C_BG = 0xFFFFFF; C_PANEL = 0xF3F5F9; C_TRACK = 0xDFE4EE; C_SLOT = 0xEEF1F7; C_RULE = 0xD5DBE8;
+C_TEXT = 0x1F2E54; C_DIM = 0x5F6B8A; C_FAINT = 0x9AA4BC;
+C_PLOT = 0x1F2E54; C_GRID2 = 0x4A5E94; C_SUB = 0xA4B4D2;
+C_YAM = 0xF0B13A; C_YAM2 = 0xF7C968; C_YAM3 = 0xDF9A22;
+
+t_prev = time_precise();
+drag_id = 0; edit_id = 0; lmb_prev = rmb_prev = 0;
+
+function clamp(x lim_lo lim_hi) ( x < lim_lo ? lim_lo : (x > lim_hi ? lim_hi : x) );
+function rnd(x) ( floor(x + 0.5) );
+
+function setc(col alpha) (
+  gfx_set(((col >> 16) & 255) / 255, ((col >> 8) & 255) / 255, (col & 255) / 255, alpha);
+);
+
+// 端を丸めた座標で塗る（隣接矩形の隙間・重なりを防ぐ）
+function frect(x y w h) local(x0 y0 x1 y1) (
+  x0 = rnd(x); y0 = rnd(y); x1 = rnd(x + w); y1 = rnd(y + h);
+  x1 > x0 && y1 > y0 ? gfx_rect(x0, y0, x1 - x0, y1 - y0);
+);
+
+// 角丸の塗り（gfx_roundrect は枠線のみのため自前）。不透明色専用。
+// gfx_circle は中心±r を含む(2r+1 px)ので、半ピクセルずらして矩形の端に合わせる。
+function rrect(x y w h r) (
+  x = rnd(x); y = rnd(y); w = rnd(w); h = rnd(h);
+  r = min(r, min(w, h) * 0.5);
+  frect(x + r, y, w - 2 * r, h);
+  frect(x, y + r, r, h - 2 * r);
+  frect(x + w - r, y + r, r, h - 2 * r);
+  gfx_circle(x + r - 0.5, y + r - 0.5, max(r - 0.5, 0.5), 1, 1);
+  gfx_circle(x + w - r - 0.5, y + r - 0.5, max(r - 0.5, 0.5), 1, 1);
+  gfx_circle(x + r - 0.5, y + h - r - 0.5, max(r - 0.5, 0.5), 1, 1);
+  gfx_circle(x + w - r - 0.5, y + h - r - 0.5, max(r - 0.5, 0.5), 1, 1);
+);
+
+// 不透明色専用。円を重ねて太さの一定な線を描く。
+function sline(x0 y0 x1 y1 th) local(r l n k t) (
+  r = th * 0.5;
+  l = sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
+  n = max(ceil(l / max(r * 0.45, 0.8)), 1);
+  k = 0;
+  loop(n + 1,
+    t = k / n;
+    gfx_circle(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, r, 1, 1);
+    k += 1;
+  );
+);
+
+// 中心(cx,cy)・半径 r1〜r2・角度 a0〜a1(rad, 真上が 0・時計回りが正) の円弧の帯
+function arcw(cx cy r1 r2 a0 a1) local(r) (
+  a1 - a0 > 0.01 ? (
+    r = r1;
+    while (r <= r2 + 0.01) ( gfx_arc(cx, cy, r, a0, a1, 1); r += 0.5; );
+  );
+);
+
+function font(id) local(sz fl) (
+  sz = 12; fl = 0;
+  id == 2 ? ( sz = 11; );
+  id == 3 ? ( sz = 17; fl = 'b'; );
+  id == 4 ? ( sz = 10; );
+  id == 5 ? ( sz = 11; fl = 'b'; );
+  id == 6 ? ( sz = 12; fl = 'b'; );
+  id == 7 ? ( sz = lbl_fs / S; fl = 'b'; );
+  id == 8 ? ( sz = 46; );
+  id == 9 ? ( sz = 14; );
+  gfx_setfont(id, "Arial", max(rnd(sz * S), 6), fl);
+);
+
+// flags: 1=横中央 2=右寄せ 4=縦中央
+function txt(msg x y w h fl) (
+  gfx_x = x; gfx_y = y;
+  gfx_drawstr(msg, fl, x + w, y + h);
+);
+
+// 小数 dec 桁の文字列（"-0.0" を避けるため先に丸める）
+function fmt(v dec) local(p r) (
+  p = 10 ^ dec;
+  r = floor(abs(v) * p + 0.5) / p;
+  v < 0 && r > 0 ? ( r = -r; );
+  dec < 1 ? sprintf(#fmt, "%.0f", r) : (
+    dec < 2 ? sprintf(#fmt, "%.1f", r) : sprintf(#fmt, "%.2f", r));
+  #fmt;
+);
+
+// ---- パラメーター表（スライダー行の宣言と同じ値） ----
+// 0..4: 最小 最大 既定 刻み log / 5: 小数桁 / 6: 単位 / 7: 短い名前 / 8: 正式名 / 9: ヒント / 10: 0 中心のノブ
+// GUI の表は DSP が使うメモリ（0..4600）と別の領域に置く。
+PT = 8000;
+function pdef(i mn mx df st lg dc unit nm fnm hnt bip) local(b) (
+  b = PT + i * 12;
+  b[0] = mn; b[1] = mx; b[2] = df; b[3] = st; b[4] = lg; b[5] = dc;
+  b[6] = unit; b[7] = nm; b[8] = fnm; b[9] = hnt; b[10] = bip;
+);
+function pget(i f) local(b) ( b = PT + i * 12; b[f]; );
+
+pdef(1, -36, -6, -16, 0.1, 0, 1, "dB", "Hybrid Target", "Hybrid Target", "Level that the hybrid measurement is steered toward", 0);
+pdef(2, 0, 6, 6, 0.1, 0, 1, "dB", "Push Down", "Push Down", "Maximum attenuation applied when the level is above the target", 0);
+pdef(3, 0, 6, 6, 0.1, 0, 1, "dB", "Pull Up", "Pull Up", "Maximum boost applied when the level is below the target", 0);
+pdef(4, 0.1, 30, 3, 0.1, 1, 1, "s", "Smoothing", "Smoothing", "Moving-average window of the target gain, for both rises and falls", 0);
+pdef(5, -12, 12, 0, 0.1, 0, 1, "dB", "Calibration", "RMS Calibration", "Offset added to the RMS before it is mixed with Loudness", 1);
+pdef(6, 0, 100, 50, 1, 0, 0, "%", "Ratio", "RMS Ratio", "0% follows Loudness only; 100% follows RMS only", 0);
+
+function pq(i v) local(pmn pmx pst) (
+  pmn = pget(i, 0); pmx = pget(i, 1); pst = pget(i, 3);
+  clamp(floor((v - pmn) / pst + 0.5) * pst + pmn, pmn, pmx);
+);
+function p_norm(i v) local(pmn pmx) (
+  pmn = pget(i, 0); pmx = pget(i, 1);
+  pget(i, 4) ? log(max(v, pmn) / pmn) / log(pmx / pmn) : (v - pmn) / (pmx - pmn);
+);
+function p_from_norm(i n) local(pmn pmx) (
+  pmn = pget(i, 0); pmx = pget(i, 1); n = clamp(n, 0, 1);
+  pget(i, 4) ? pmn * exp(n * log(pmx / pmn)) : pmn + n * (pmx - pmn);
+);
+
+// 値と単位の表示
+function pstr(i) (
+  strcpy(#pstr, fmt(slider(i), pget(i, 5)));
+  strcat(#pstr, " ");
+  strcat(#pstr, pget(i, 6));
+  #pstr;
+);
+
+function notify(i) (
+  sliderchange(slider(i));
+  slider_automate(slider(i));
+);
+
+function set_param(i v) local(old) (
+  v = pq(i, v);
+  old = slider(i);
+  v != old ? ( slider(i) = v; notify(i); );
+);
+function reset_param(i) ( set_param(i, pget(i, 2)); );
+
+// On/Off のスライダー（7: Silence, 8: Playback, 9: Bypass, 10: Settings）を切り替える
+function toggle(i) (
+  slider(i) = slider(i) >= 0.5 ? 0 : 1;
+  notify(i);
+);
+
+// ホイール 1 ノッチ = つまみの移動量の 2%（Shift で 0.2%）。最低 1 ステップは動かす。
+function wheel_param(i w) local(old v st) (
+  old = slider(i); st = pget(i, 3);
+  v = pq(i, p_from_norm(i, p_norm(i, old) + w * (shift ? 0.002 : 0.02)));
+  abs(v - old) < st * 0.5 ? ( v = old + (w > 0 ? st : -st); );
+  set_param(i, v);
+);
+
+function is_dbl(id) local(d) (
+  d = id == lc_id && now - lc_t < 0.4;
+  lc_id = d ? 0 : id;
+  lc_t = now;
+  d;
+);
+
+function edit_commit() local(ok v) (
+  edit_id ? (
+    ok = edit_digits > 0 && match("%f", #edit_str, v);
+    ok ? set_param(edit_id, v);
+    edit_id = 0;
+  );
+);
+function edit_begin(i) local(c) (
+  edit_id ? edit_commit();
+  c = 1;
+  while (c > 0) ( c = gfx_getchar(); ); // 入力開始前に溜まっていたキーは捨てる
+  edit_id = i;
+  edit_t0 = now;
+  strcpy(#edit_str, fmt(slider(i), pget(i, 5)));
+  edit_digits = 1;
+  edit_fresh = 1; // 最初の入力で全置換
+);
+function edit_key(c) local(n ch) (
+  edit_t0 = now;
+  c == 13 || c == 10 ? ( edit_commit(); ) : (
+  c == 27 ? ( edit_id = 0; ) : (
+  c == 8 ? (
+    edit_fresh ? ( strcpy(#edit_str, ""); edit_digits = 0; edit_fresh = 0; ) : (
+      n = strlen(#edit_str);
+      n > 0 ? (
+        ch = str_getchar(#edit_str, n - 1);
+        ch >= 48 && ch <= 57 ? ( edit_digits -= 1; );
+        str_delsub(#edit_str, n - 1, 1);
+      );
+    );
+  ) : (
+    ch = c == 44 ? 46 : c; // ',' は '.' として扱う
+    ((ch >= 48 && ch <= 57) || ch == 46 || ch == 45) && strlen(#edit_str) < 9 ? (
+      edit_fresh ? ( strcpy(#edit_str, ""); edit_digits = 0; edit_fresh = 0; );
+      ch >= 48 && ch <= 57 ? ( edit_digits += 1; );
+      str_setchar(#edit_str, strlen(#edit_str), ch);
+    );
+  )));
+);
+
+// 入力中だけキー入力を受け取る（それ以外では gfx_getchar を呼ばず、キーは REAPER 側に任せる）
+function ui_keys() local(c) (
+  c = 1;
+  while (edit_id && c != 0) (
+    c = gfx_getchar();
+    c < 0 ? ( edit_id = 0; ) : ( c > 0 ? edit_key(c); );
+  );
+);
+
+function edit_box(x y w h) local(str tw th tx) (
+  edit_rx = x; edit_ry = y; edit_rw = w; edit_rh = h;
+  setc(C_YAM, 1); rrect(x, y, w, h, 5 * S);
+  setc(C_BG, 1); rrect(x + 2 * S, y + 2 * S, w - 4 * S, h - 4 * S, 3.5 * S);
+  font(1);
+  str = #edit_str;
+  gfx_measurestr(str, tw, th);
+  tx = x + w - 8 * S - tw;
+  edit_fresh ? ( setc(C_YAM, 0.4); frect(tx - 2 * S, y + 3.5 * S, tw + 4 * S, h - 7 * S); );
+  setc(C_TEXT, 1);
+  txt(str, tx, y, tw + 4 * S, h, 4);
+  !edit_fresh && floor((now - edit_t0) * 2) % 2 == 0 ? ( setc(C_TEXT, 1); frect(x + w - 7 * S, y + 4 * S, max(S, 1), h - 8 * S); );
+);
+
+function fit_labels() local(i tw th wmax fs) (
+  font(5);
+  wmax = 1;
+  i = 1;
+  loop(6,
+    gfx_measurestr(pget(i, 7), tw, th); wmax = max(wmax, tw);
+    i += 1;
+  );
+  fs = max(rnd(11 * S), 6);
+  lbl_fs = clamp(floor(fs * (kw - 4 * S) / wmax), 6, fs);
+);
+
+function ui_begin() (
+  S = max(min(ui_w / BW, ui_h / BH), 0.25);
+  now = time_precise();
+  t_prev = now;
+
+  mx = mouse_x * SS; my = mouse_y * SS;
+  lmb = mouse_cap & 1;
+  rmb = mouse_cap & 2;
+  ldown = lmb && !lmb_prev;
+  rdown = rmb && !rmb_prev;
+  shift = mouse_cap & 8;
+  ctrl = mouse_cap & 4;
+  wh = mouse_wheel / 120;
+  mouse_wheel = 0;
+  !lmb ? ( drag_id = 0; );
+  hint_id = 0;
+  // 入力中の欄の外をクリックしたら、そのクリックを処理する前に確定する
+  (ldown || rdown) && edit_id && !(mx >= edit_rx && mx < edit_rx + edit_rw && my >= edit_ry && my < edit_ry + edit_rh) ? edit_commit();
+  ui_keys();
+
+  mg = 44 * S; // 全パーツ共通の左右余白（ヘッダー、メーター、欄、Settings、フッターの端をそろえる）
+  ft_h = 22 * S; ft_y = ui_h - 18 * S - ft_h;
+  set_on = settings_open >= 0.5;
+  sec_h = (set_on ? 104 : 22) * S;
+  gg = 16 * S;
+  kw = (ui_w - 2 * mg - gg) / 6;
+  fit_labels();
+
+  // メーターは上端から固定の大きさ。Settings の開閉で変わるのは、その下の部分だけ。
+  pl_x = mg;
+  pl_y = 53 * S;
+  pl_w = ui_w - 2 * mg;
+  pl_h = MT_H * S;
+  pl_b = pl_y + pl_h;
+  fd_y = pl_b + 12 * S; // 測定値の欄
+  kz_y = fd_y + 20 * S + 14 * S; // Settings セクションの上端
+  kg_y = kz_y + 20 * S; // グループ名の行
+);
+
+function ui_end() (
+  lmb_prev = lmb;
+  rmb_prev = rmb;
+);
+
+function draw_dot(x y on) (
+  setc(on ? C_TEXT : C_FAINT, 1); gfx_circle(x, y, 3.8 * S, 1, 1);
+);
+
+// 丸いボタン。on=1 で Amber、momentary=1 は押している間だけ点灯する。クリックされたフレームだけ 1 を返す。
+function ui_pill(x y w h label on id momentary) local(hot lit) (
+  hot = !drag_id && !edit_id && mx >= x && mx < x + w && my >= y && my < y + h;
+  hot ? ( hint_id = id; );
+  lit = on || (momentary && hot && lmb);
+  lit ? (
+    setc(hot ? C_YAM2 : C_YAM, 1); rrect(x, y, w, h, h * 0.5);
+  ) : (
+    setc(C_TEXT, 1); rrect(x, y, w, h, h * 0.5);
+    setc(hot ? C_SLOT : C_BG, 1); rrect(x + 2 * S, y + 2 * S, w - 4 * S, h - 4 * S, h * 0.5 - 2 * S);
+  );
+  draw_dot(x + h * 0.5 + 1 * S, y + h * 0.5, lit);
+  font(6); setc(C_TEXT, 1);
+  txt(label, x + h, y, w - h - 8 * S, h, 1 | 4);
+  ldown && hot;
+);
+
+function ui_header() local(tw th) (
+  font(3); setc(C_TEXT, 1);
+  gfx_measurestr("AZMhybridAGC", tw, th);
+  txt("AZMhybridAGC", mg, 15 * S, tw + 4 * S, 28 * S, 4);
+  ui_pill(ui_w - mg - 104 * S, 18 * S, 104 * S, 26 * S, "BYPASS", bypass >= 0.5, 301, 0) ? toggle(9);
+);
+
+// 目標ゲインでなく、実際に出力へ適用されているゲイン（dB）を大きく表示する。
+function ui_meter() local(px py pw ph bx n ux gw gh uw uh cx cy v r) (
+  setc(C_PLOT, 1); rrect(pl_x, pl_y, pl_w, pl_h, 12 * S);
+
+  // 左のボタン 3 つ
+  pw = 112 * S; ph = 26 * S;
+  px = pl_x + 14 * S;
+  py = pl_y + (pl_h - 3 * ph - 12 * S) * 0.5;
+  ui_pill(px, py, pw, ph, "SILENCE", reset_silence >= 0.5, 300, 0) ? toggle(7);
+  ui_pill(px, py + ph + 6 * S, pw, ph, "PLAYBACK", reset_play >= 0.5, 302, 0) ? toggle(8);
+  ui_pill(px, py + 2 * (ph + 6 * S), pw, ph, "RESET", 0, 303, 1) ? ( reset_request = 1; );
+
+  // 右の領域の中央に APPLIED GAIN
+  bx = px + pw + 14 * S;
+  cx = bx + (pl_x + pl_w - bx) * 0.5;
+  cy = pl_y + pl_h * 0.5;
+  font(4); setc(C_SUB, 1);
+  txt("APPLIED GAIN", bx, pl_y + 12 * S, pl_x + pl_w - bx, 14 * S, 1);
+
+  v = log(max(applied_gain, 0.000000001)) * 8.685889638065037;
+  r = floor(abs(v) * 100 + 0.5) / 100;
+  r < 0.005 ? strcpy(#gain_s, "0.00") : (
+    sprintf(#gain_s, v < 0 ? "-%.2f" : "+%.2f", r);
+  );
+  font(8); gfx_measurestr(#gain_s, gw, gh);
+  font(9); gfx_measurestr("dB", uw, uh);
+  ux = cx - (gw + 6 * S + uw) * 0.5;
+  font(8); setc(C_BG, 1);
+  txt(#gain_s, ux, cy - gh * 0.5 + 6 * S, gw + 4 * S, gh, 4);
+  font(9); setc(C_SUB, 1);
+  txt("dB", ux + gw + 6 * S, cy + gh * 0.5 - uh - 4 * S, uw + 4 * S, uh, 4);
+
+  measurement_fault ? (
+    font(4); setc(C_YAM, 1);
+    txt("MEASUREMENT ERROR - RESET", bx, pl_b - 22 * S, pl_x + pl_w - bx, 14 * S, 1);
+  );
+);
+
+// 読み取り専用の測定値欄。tag: 1 = Amber、2 = ダーク、3 = 中立色
+function ui_readout(x y w h tag str id) local(bd bg fg hot) (
+  hot = !drag_id && !edit_id && mx >= x && mx < x + w && my >= y && my < y + h;
+  hot ? ( hint_id = id; );
+  tag == 1 ? ( bd = C_YAM3; bg = hot ? C_YAM2 : C_YAM; fg = C_TEXT; ) : (
+  tag == 2 ? ( bd = C_PLOT; bg = hot ? 0x2A3C68 : C_PLOT; fg = C_BG; ) : (
+    bd = C_TRACK; bg = hot ? C_SLOT : C_BG; fg = C_TEXT; ));
+  setc(bd, 1); rrect(x, y, w, h, 4 * S);
+  setc(bg, 1); rrect(x + S, y + S, w - 2 * S, h - 2 * S, 3 * S);
+  font(2); setc(fg, 1);
+  txt(str, x, y, w, h, 1 | 4);
+);
+
+// メーターの下 1 段: LOUDNESS / COMBINED RMS / HYBRID LEVEL
+function ui_readouts() local(h fw gap rule x tw th w1 w2 w3 gp n) (
+  h = 20 * S; fw = 72 * S; gap = 8 * S;
+  font(4);
+  gfx_measurestr("LOUDNESS", w1, th);
+  gfx_measurestr("COMBINED RMS", w2, th);
+  gfx_measurestr("HYBRID LEVEL", w3, th);
+  gp = max((ui_w - 2 * mg - (w1 + w2 + w3) - 3 * (fw + gap)) * 0.5, 12 * S);
+
+  have_measurement ? (
+    strcpy(#ro1, fmt(loudness_db, 1)); strcat(#ro1, " LUFS");
+    strcpy(#ro2, fmt(rms_db + rms_cal, 1)); strcat(#ro2, " dBFS");
+    strcpy(#ro3, fmt(hybrid_db, 1)); strcat(#ro3, " dB");
+  ) : (
+    strcpy(#ro1, "--"); strcpy(#ro2, "--"); strcpy(#ro3, "--");
+  );
+
+  x = mg;
+  font(4); setc(C_YAM3, 1); txt("LOUDNESS", x, fd_y, w1 + 4 * S, h, 4);
+  ui_readout(x + w1 + gap, fd_y, fw, h, 1, #ro1, 311);
+  x += w1 + gap + fw + gp * 0.5;
+  setc(C_RULE, 1); rule = floor(x) + 0.5; gfx_line(rule, fd_y + S, rule, fd_y + h - S, 0);
+  x += gp * 0.5;
+  font(4); setc(C_DIM, 1); txt("COMBINED RMS", x, fd_y, w2 + 4 * S, h, 4);
+  ui_readout(x + w2 + gap, fd_y, fw, h, 2, #ro2, 312);
+  x += w2 + gap + fw + gp * 0.5;
+  setc(C_RULE, 1); rule = floor(x) + 0.5; gfx_line(rule, fd_y + S, rule, fd_y + h - S, 0);
+  x += gp * 0.5;
+  font(4); setc(C_DIM, 1); txt("HYBRID LEVEL", x, fd_y, w3 + 4 * S, h, 4);
+  ui_readout(x + w3 + gap, fd_y, fw, h, 3, #ro3, 313);
+);
+
+function arc_cap(cx cy rm ang w) (
+  gfx_circle(cx + sin(ang) * rm, cy - cos(ang) * rm, w * 0.5, 1, 1);
+);
+
+// 角度 ±135° に値を割り当てた円形つまみ。bip なら 0 の位置(真上)から値まで弧を引く。
+function knob_draw(cx cy rad n bip hot act) local(ang rin rm w a0 a1) (
+  ang = (n - 0.5) * 4.71238898038469;
+  w = 4 * S;
+  rin = rad - w;
+  rm = rad - w * 0.5;
+  setc(C_TRACK, 1);
+  arcw(cx, cy, rin, rad, -2.356194490192345, 2.356194490192345);
+  arc_cap(cx, cy, rm, -2.356194490192345, w);
+  arc_cap(cx, cy, rm, 2.356194490192345, w);
+  a0 = bip ? min(0, ang) : -2.356194490192345;
+  a1 = bip ? max(0, ang) : ang;
+  setc(act || hot ? C_YAM3 : C_YAM, 1);
+  arcw(cx, cy, rin, rad, a0, a1);
+  arc_cap(cx, cy, rm, a0, w);
+  arc_cap(cx, cy, rm, a1, w);
+  setc(C_TEXT, 1); gfx_circle(cx, cy, rin - 2.4 * S, 1, 1);
+  setc(C_BG, 1);
+  sline(cx + sin(ang) * 2 * S, cy - cos(ang) * 2 * S, cx + sin(ang) * (rin - 5 * S), cy - cos(ang) * (rin - 5 * S), 2.4 * S);
+);
+
+function knob_slot(i sx sy sw sh) local(hot act ed ined n cx cy rad vy) (
+  ed = edit_id == i;
+  ined = ed && mx >= edit_rx && mx < edit_rx + edit_rw && my >= edit_ry && my < edit_ry + edit_rh;
+  hot = !ined && (!drag_id || drag_id == i) && mx >= sx && mx < sx + sw && my >= sy && my < sy + sh;
+  hot ? ( hint_id = i; );
+  ldown && hot ? (
+    drag_id = i;
+    drag_mx0 = mx; drag_my0 = my; drag_sh = shift;
+    (ctrl || is_dbl(i)) ? reset_param(i);
+    drag_n0 = p_norm(i, slider(i));
+  );
+  rdown && hot && !ed ? edit_begin(i);
+  drag_id == i && lmb ? (
+    shift != drag_sh ? ( drag_sh = shift; drag_mx0 = mx; drag_my0 = my; drag_n0 = p_norm(i, slider(i)); );
+    set_param(i, p_from_norm(i, drag_n0 + (shift ? 0.1 : 1) * ((drag_my0 - my) + (mx - drag_mx0) * 0.5) / (150 * S)));
+  );
+  hot && wh != 0 && !drag_id ? ( wheel_param(i, wh); wh = 0; );
+
+  act = drag_id == i;
+  n = p_norm(i, slider(i));
+  hot || act ? ( setc(C_SLOT, 1); rrect(sx + 1 * S, sy, sw - 2 * S, sh - 4 * S, 8 * S); );
+  font(7); setc(C_TEXT, 1);
+  txt(pget(i, 7), sx, sy + 2 * S, sw, 12 * S, 1 | 4);
+  rad = 13 * S; cx = sx + sw * 0.5; cy = sy + 19 * S + rad;
+  knob_draw(cx, cy, rad, n, pget(i, 10), hot, act);
+  vy = sy + 19 * S + 2 * rad + 3 * S;
+  ed ? edit_box(sx + 3 * S, vy, sw - 6 * S, 15 * S) : (
+    strcpy(#kv, fmt(slider(i), pget(i, 5)));
+    strcat(#kv, " ");
+    strcat(#kv, pget(i, 6));
+    font(1); setc(act || hot ? C_TEXT : C_DIM, 1);
+    txt(#kv, sx, vy, sw, 15 * S, 1 | 4);
+  );
+);
+
+function knob_group(title p0 cnt x) local(k tw th) (
+  font(4); setc(C_DIM, 1);
+  gfx_measurestr(title, tw, th);
+  txt(title, x + 2 * S, kg_y, tw + 8 * S, 12 * S, 4);
+  setc(C_RULE, 1);
+  gfx_line(x + tw + 12 * S, kg_y + 6 * S, x + cnt * kw - 2 * S, kg_y + 6 * S, 0);
+  k = 0;
+  loop(cnt,
+    knob_slot(p0 + k, x + k * kw, kg_y + 16 * S, kw, 65 * S);
+    k += 1;
+  );
+  x + cnt * kw + gg;
+);
+
+// Settings の見出し。クリックで開閉する（開閉状態は settings_open に保存される）。
+function ui_settings_head() local(hot tw th cx cy) (
+  font(6);
+  gfx_measurestr("SETTINGS", tw, th);
+  hot = !drag_id && !edit_id && mx >= mg && mx < mg + tw + 34 * S && my >= kz_y && my < kz_y + 18 * S;
+  hot ? ( hint_id = 305; );
+  ldown && hot ? ( toggle(10); set_on = !set_on; );
+  cx = mg + 9 * S; cy = kz_y + 9 * S;
+  setc(hot ? C_TEXT : C_DIM, 1);
+  set_on ? (
+    gfx_triangle(cx - 4.5 * S, cy - 2.5 * S, cx + 4.5 * S, cy - 2.5 * S, cx, cy + 3.5 * S);
+  ) : (
+    gfx_triangle(cx - 2.5 * S, cy - 4.5 * S, cx - 2.5 * S, cy + 4.5 * S, cx + 3.5 * S, cy);
+  );
+  setc(C_TEXT, 1);
+  txt("SETTINGS", mg + 22 * S, kz_y, tw + 8 * S, 18 * S, 4);
+  setc(C_RULE, 1);
+  gfx_line(mg + 30 * S + tw, kz_y + 9 * S, ui_w - mg, kz_y + 9 * S, 0);
+);
+
+function ui_knobs() local(x) (
+  ui_settings_head();
+  set_on ? (
+    x = mg;
+    x = knob_group("BEHAVIOR", 1, 4, x);
+    x = knob_group("RMS", 5, 2, x);
+  );
+);
+
+function foot_hint(x ttl desc) local(tw th) (
+  font(2); gfx_measurestr(ttl, tw, th);
+  setc(C_TEXT, 1); txt(ttl, x, ft_y, tw + 4 * S, ft_h, 4);
+  setc(C_DIM, 1); txt(desc, x + tw + 18 * S, ft_y, ui_w, ft_h, 4);
+);
+
+function ui_footer() local(p x tw th) (
+  setc(C_PANEL, 1); rrect(mg, ft_y, ui_w - 2 * mg, ft_h, 7 * S);
+  x = mg + 12 * S;
+  font(2);
+  edit_id ? (
+    setc(C_TEXT, 1);
+    txt("Type a value.   Enter: apply     Esc: cancel     Click elsewhere: apply", x, ft_y, ui_w, ft_h, 4);
+  ) : (
+    hint_id == 300 ? foot_hint(x, "Silence", "Reset the measurement after 5 s below -60 dBFS. Click to turn on or off") : (
+    hint_id == 301 ? foot_hint(x, "Bypass", "Pass the input through unprocessed. Measurement keeps running") : (
+    hint_id == 302 ? foot_hint(x, "Playback", "Reset the measurement when playback starts from stop or pause") : (
+    hint_id == 303 ? foot_hint(x, "Reset", "Clear the measurement and start learning again") : (
+    hint_id == 305 ? foot_hint(x, "Settings", "Click to show or hide the target, gain limit, smoothing and RMS knobs") : (
+    hint_id == 311 ? foot_hint(x, "Loudness", "K-weighted loudness of the input, from gated 400 ms blocks") : (
+    hint_id == 312 ? foot_hint(x, "Combined RMS", "RMS of the same blocks plus Calibration") : (
+    hint_id == 313 ? foot_hint(x, "Hybrid Level", "Loudness and RMS mixed by RMS Ratio. The gain steers it to the target") : (
+    hint_id ? (
+      strcpy(#ft, pget(hint_id, 8));
+      strcat(#ft, "  ");
+      strcat(#ft, pstr(hint_id));
+      foot_hint(x, #ft, pget(hint_id, 9));
+    ) : (
+      setc(C_DIM, 1);
+      txt("Drag the knobs to adjust.   Right-click: type a value   Double-click: reset   Shift: fine", x, ft_y, ui_w, ft_h, 4);
+    )))))))));
+  );
+);
+
+function ui_frame() (
+  ui_begin();
+  setc(C_BG, 1); gfx_rect(0, 0, ui_w, ui_h);
+  ui_header();
+  ui_meter();
+  ui_readouts();
+  ui_knobs();
+  ui_footer();
+  ui_end();
+);
+
 @slider
 // The audio thread reads slider values when it processes the next block/hop.
 
@@ -240,151 +789,12 @@ applied_gain = 1+(pow(10,gain_db/20)-1)*(1-bypass_mix);
 spl0 = in_l*applied_gain;
 spl1 = in_r*applied_gain;
 
-@gfx 500 300
-// UI coordinates are proportional to width; DSP state is read-only here.
-ui_s = gfx_w/500;
-ui_h = gfx_h/ui_s;
-ui_open = settings_open >= 0.5;
-ui_plot_h = max(60,ui_h-(ui_open ? 182 : 85));
-ui_meter_y = 40+ui_plot_h;
-ui_settings_y = ui_meter_y+29;
-ui_left = mouse_cap&1;
-ui_pressed = ui_left && !ui_last_left;
-ui_released = !ui_left && ui_last_left;
-ui_mx = mouse_x/ui_s;
-ui_my = mouse_y/ui_s;
+@gfx 570 353
+ui_w = gfx_w * SS; ui_h = gfx_h * SS;
+ui_w != buf_w || ui_h != buf_h ? ( gfx_setimgdim(0, ui_w, ui_h); buf_w = ui_w; buf_h = ui_h; );
+gfx_dest = 0;
+ui_frame();
+gfx_dest = -1;
+gfx_a = 1; gfx_mode = 0; gfx_x = gfx_y = 0;
+gfx_blit(0, 1 / SS, 0);
 
-function color(c a) (
-  gfx_set(((c>>16)&255)/255,((c>>8)&255)/255,(c&255)/255,a);
-);
-function rect(x y w h c) (
-  color(c,1); gfx_rect(x*ui_s,y*ui_s,w*ui_s,h*ui_s,1);
-);
-function roundrect(x y w h r c) (
-  color(c,1);
-  gfx_rect((x+r)*ui_s,y*ui_s,(w-2*r)*ui_s,h*ui_s,1);
-  gfx_rect(x*ui_s,(y+r)*ui_s,w*ui_s,(h-2*r)*ui_s,1);
-  gfx_circle((x+r)*ui_s,(y+r)*ui_s,r*ui_s,1,1);
-  gfx_circle((x+w-r)*ui_s,(y+r)*ui_s,r*ui_s,1,1);
-  gfx_circle((x+r)*ui_s,(y+h-r)*ui_s,r*ui_s,1,1);
-  gfx_circle((x+w-r)*ui_s,(y+h-r)*ui_s,r*ui_s,1,1);
-);
-function font(size) ( gfx_setfont(1,"Arial",max(1,floor(size*ui_s))); );
-function text(x y str c size) (
-  color(c,1); font(size); gfx_x=x*ui_s; gfx_y=y*ui_s; gfx_drawstr(str);
-);
-function centered(x y w h str c size) local(tw th) (
-  color(c,1); font(size); gfx_measurestr(str,tw,th);
-  gfx_x=(x+w*0.5)*ui_s-tw*0.5; gfx_y=(y+h*0.5)*ui_s-th*0.5;
-  gfx_drawstr(str);
-);
-function inside(x y w h) ( ui_mx>=x && ui_mx<x+w && ui_my>=y && ui_my<y+h; );
-function set_slider(i v) (
-  slider(i) = v;
-  sliderchange(slider(i));
-  slider_automate(slider(i));
-);
-function ui_button(x y w h str on) (
-  roundrect(x,y,w,h,4,on ? 0xFFF8E9 : 0xFFFFFF);
-  color(on ? 0xE5A331 : 0xADB9CB,1);
-  gfx_circle((x+10)*ui_s,(y+h*0.5)*ui_s,2.2*ui_s,1,1);
-  centered(x+7,y,w-7,h,str,on ? 0x99630A : 0x53647F,8);
-);
-function ui_knob(i x y lo hi caption val unit) local(cx cy n angle j a px py) (
-  centered(x,y,72,13,caption,0x1F2E54,9);
-  cx=x+36; cy=y+33;
-  color(0xDFE4EE,1);
-  j=0;
-  loop(48,
-    a=-2.35619449+j*4.71238898/47;
-    gfx_circle((cx+sin(a)*14)*ui_s,(cy-cos(a)*14)*ui_s,2*ui_s,1,1);
-    j+=1;
-  );
-  n=bound((val-lo)/(hi-lo),0,1);
-  color(0xF0B13A,1);
-  j=0;
-  loop(max(1,floor(n*47)+1),
-    a=-2.35619449+j*4.71238898/47;
-    gfx_circle((cx+sin(a)*14)*ui_s,(cy-cos(a)*14)*ui_s,2*ui_s,1,1);
-    j+=1;
-  );
-  color(0x1F2E54,1); gfx_circle(cx*ui_s,cy*ui_s,10*ui_s,1,1);
-  angle=-2.35619449+n*4.71238898;
-  color(0xFFFFFF,1);
-  gfx_line((cx+sin(angle)*2)*ui_s,(cy-cos(angle)*2)*ui_s,
-           (cx+sin(angle)*7)*ui_s,(cy-cos(angle)*7)*ui_s,1);
-  sprintf(#ui_val,"%.1f %s",val,unit);
-  i==6 ? sprintf(#ui_val,"%.0f %%",val);
-  centered(x,y+51,72,15,#ui_val,0x5F6B8A,9);
-  ui_pressed && inside(x,y,72,68) ? (
-    ui_drag=i; ui_drag_y=ui_my; ui_drag_val=val;
-  );
-  ui_drag==i && ui_left ? (
-    ui_v = bound(ui_drag_val+(ui_drag_y-ui_my)*(hi-lo)/150,lo,hi);
-    ui_quantum = i==6 ? 1 : 0.1;
-    set_slider(i,bound(lo+floor((ui_v-lo)/ui_quantum+0.5)*ui_quantum,lo,hi));
-  );
-);
-
-gfx_set(1,1,1,1); gfx_rect(0,0,gfx_w,gfx_h,1);
-text(12,10,"AZMhybridAGC",0x1F2E54,17);
-roundrect(416,9,72,24,12,0x1F2E54);
-roundrect(418,11,68,20,10,bypass>=0.5 ? 0xFFF8E9 : 0xFFFFFF);
-color(bypass>=0.5 ? 0xE5A331 : 0xADB9CB,1);
-gfx_circle(426*ui_s,21*ui_s,3*ui_s,1,1);
-centered(425,9,61,24,"BYPASS",0x1F2E54,9);
-ui_pressed && inside(416,9,72,24) ? set_slider(9,1-bypass);
-
-roundrect(12,40,476,ui_plot_h,8,0x1F2E54);
-ui_btn_h=(ui_plot_h-14)/3;
-ui_button(19,47,77,ui_btn_h,"SILENCE",reset_silence>=0.5);
-ui_button(19,47+ui_btn_h,77,ui_btn_h,"PLAYBACK",reset_play>=0.5);
-ui_button(19,47+2*ui_btn_h,77,ui_btn_h,"RESET",0);
-ui_pressed && inside(19,47,77,ui_btn_h) ? set_slider(7,1-reset_silence);
-ui_pressed && inside(19,47+ui_btn_h,77,ui_btn_h) ? set_slider(8,1-reset_play);
-ui_pressed && inside(19,47+2*ui_btn_h,77,ui_btn_h) ? reset_request=1;
-
-centered(105,68+max(25,ui_plot_h-42)*0.5-46,383,16,"APPLIED GAIN",0xA4B4D2,9);
-sprintf(#ui_gain,"%+.2f",db_power(applied_gain*applied_gain));
-font(54); gfx_measurestr(#ui_gain,ui_gain_w,ui_gain_h);
-ui_gain_x=105+(383-(ui_gain_w/ui_s+23))*0.5;
-centered(ui_gain_x,68,ui_gain_w/ui_s,max(25,ui_plot_h-42),#ui_gain,0xFFFFFF,54);
-text(ui_gain_x+ui_gain_w/ui_s+5,68+max(25,ui_plot_h-42)*0.5+10,"dB",0xD3DCEF,13);
-measurement_fault ? centered(105,ui_meter_y-18,383,12,"MEASUREMENT ERROR - RESET",0xF0B13A,9);
-
-ui_read_y=ui_meter_y+8;
-text(12,ui_read_y+5,"LOUDNESS",0xD3921E,9);
-text(159,ui_read_y+5,"COMBINED RMS",0x687994,9);
-text(337,ui_read_y+5,"HYBRID LEVEL",0x687994,9);
-roundrect(71,ui_read_y,70,21,4,0xF0B13A);
-roundrect(245,ui_read_y,70,21,4,0x1F2E54);
-roundrect(418,ui_read_y,70,21,4,0xF1F3F8);
-rect(150,ui_read_y,1,21,0xE8ECF3);
-rect(325,ui_read_y,1,21,0xE8ECF3);
-have_measurement ? (
-  sprintf(#ui_l,"%.1f LUFS",loudness_db);
-  sprintf(#ui_r,"%.1f dBFS",rms_db+rms_cal);
-  sprintf(#ui_h,"%.1f dB",hybrid_db);
-) : (
-  strcpy(#ui_l,"--"); strcpy(#ui_r,"--"); strcpy(#ui_h,"--");
-);
-centered(71,ui_read_y,70,21,#ui_l,0x1F2E54,9);
-centered(245,ui_read_y,70,21,#ui_r,0xFFFFFF,9);
-centered(418,ui_read_y,70,21,#ui_h,0x53617B,9);
-
-ui_open ? strcpy(#ui_head,"v  SETTINGS") : strcpy(#ui_head,">  SETTINGS");
-text(12,ui_settings_y+5,#ui_head,0x1F2E54,10);
-rect(85,ui_settings_y+11,403,1,0xE5E9F1);
-ui_pressed && inside(12,ui_settings_y,100,24) ? set_slider(10,1-settings_open);
-ui_open ? (
-  text(12,ui_settings_y+25,"BEHAVIOR",0x687994,8);
-  text(340,ui_settings_y+25,"RMS",0x687994,8);
-  ui_knob(1,12,ui_settings_y+38,-36,-6,"Hybrid Target",target,"dB");
-  ui_knob(2,91,ui_settings_y+38,0,6,"Push Down",push_down,"dB");
-  ui_knob(3,170,ui_settings_y+38,0,6,"Pull Up",pull_up,"dB");
-  ui_knob(4,249,ui_settings_y+38,0.1,30,"Smoothing",smoothing,"s");
-  ui_knob(5,328,ui_settings_y+38,-12,12,"Calibration",rms_cal,"dB");
-  ui_knob(6,407,ui_settings_y+38,0,100,"Ratio",rms_ratio,"%");
-);
-ui_released ? ui_drag=0;
-ui_last_left=ui_left;
