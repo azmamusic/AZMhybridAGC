@@ -17,7 +17,7 @@ slider7:reset_silence=1<0,1,1{Off,On}>-Reset on Silence
 slider8:reset_play=0<0,1,1{Off,On}>-Reset on Playback
 slider9:bypass=0<0,1,1{Off,On}>-Bypass
 slider10:settings_open=0<0,1,1{Closed,Open}>-Settings
-slider11:short_mix=50<0,100,1>-Short Mix (%)
+slider11:short_mix=40<0,100,1>-Short Mix (%)
 
 in_pin:Left
 in_pin:Right
