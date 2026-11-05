@@ -9,14 +9,15 @@ options:no_meter
 
 slider1:target=-16<-36,-6,0.1>-Hybrid Target (dB)
 slider2:push_down=6<0,6,0.1>-Push Down (dB)
-slider3:pull_up=6<0,6,0.1>-Pull Up (dB)
-slider4:smoothing=3<0.1,30,0.1>-Smoothing (s)
-slider5:rms_cal=0<-12,12,0.1>-RMS Calibration (dB)
-slider6:rms_ratio=50<0,100,1>-RMS Ratio (%)
+slider3:pull_up=3<0,6,0.1>-Pull Up (dB)
+// slider4 was Smoothing (now fixed at 0.4 s). Do not reuse the number: saved projects may still hold its old value.
+slider5:rms_cal=3<-12,12,0.1>-RMS Calibration (dB)
+slider6:rms_ratio=40<0,100,1>-RMS Ratio (%)
 slider7:reset_silence=1<0,1,1{Off,On}>-Reset on Silence
 slider8:reset_play=0<0,1,1{Off,On}>-Reset on Playback
 slider9:bypass=0<0,1,1{Off,On}>-Bypass
 slider10:settings_open=0<0,1,1{Closed,Open}>-Settings
+slider11:short_mix=25<0,100,1>-Short Mix (%)
 
 in_pin:Left
 in_pin:Right
@@ -33,6 +34,7 @@ BK = 1300;
 BR = 2600;
 FL1 = 4000; FL2 = 4002; FR1 = 4004; FR2 = 4006;
 SM = 4100;
+SMOOTH_N = 4; // 0.4 s of 100 ms hops
 HK = 4500; HR = 4504; HS = 4508;
 LOG10 = log(10);
 EPS = pow(10,-30);
@@ -76,13 +78,13 @@ function reset_measurement() local(i) (
   window_k = window_r = window_samples = 0;
   hop_k = hop_r = hop_samples = hop_phase = 0;
   hop_index = hop_count = 0;
-  have_measurement = 0;
+  have_measurement = have_short = 0;
   measurement_fault = 0;
   loudness_db = rms_db = hybrid_db = 0;
   target_gain = 0;
   sm_pos = 0;
   i = 0;
-  loop(300, SM[i] = gain_db; i += 1;);
+  loop(SMOOTH_N, SM[i] = gain_db; i += 1;);
   gain_step = 0;
   silence_samples = 0;
   silence_latched = 0;
@@ -127,33 +129,51 @@ function add_block(k_power r_power) local(l idx threshold i n ks rs) (
   );
 );
 
-function update_target() local(mix) (
+// The latest 400 ms window, without gating. Below the absolute gate it is
+// ignored, so the gain steers by the cumulative level alone.
+function update_short(k_power r_power) local(l) (
+  l = -0.691 + db_power(k_power);
+  have_short = l >= -70 && l < 60;
+  have_short ? (
+    short_loudness_db = l;
+    short_rms_db = db_power(r_power);
+  );
+);
+
+function update_target() local(mix sm level) (
   have_measurement && !measurement_fault ? (
     mix = bound(rms_ratio*0.01,0,1);
     hybrid_db = (1-mix)*loudness_db + mix*(rms_db+rms_cal);
-    target_gain = bound(target-hybrid_db,-push_down,pull_up);
+    level = hybrid_db;
+    have_short ? (
+      sm = bound(short_mix*0.01,0,1);
+      short_db = (1-mix)*short_loudness_db + mix*(short_rms_db+rms_cal);
+      level = (1-sm)*hybrid_db + sm*short_db;
+    );
+    target_gain = bound(target-level,-push_down,pull_up);
   ) : (
     target_gain = 0;
   );
 );
 
-function advance_smoothing() local(count i p sum goal) (
+function advance_smoothing() local(i sum goal mid lim) (
   update_target();
   goal = target_gain;
   quiet ? goal = min(goal,gain_db);
   measurement_fault ? goal = gain_db;
   SM[sm_pos] = goal;
-  sm_pos = (sm_pos+1)%300;
-  count = bound(floor(smoothing*10+0.5),1,300);
+  sm_pos = (sm_pos+1)%SMOOTH_N;
   i = sum = 0;
-  p = sm_pos;
-  loop(count,
-    p = (p+299)%300;
-    sum += SM[p];
+  loop(SMOOTH_N,
+    sum += SM[i];
     i += 1;
   );
-  smooth_goal = sum/count;
-  gain_step = (smooth_goal-gain_db)/max(srate*0.1,1);
+  smooth_goal = sum/SMOOTH_N;
+  // The limit on the side the gain moves through sets its speed:
+  // 6 dB is full speed, 0 dB is a tenth, so the gain can still return.
+  mid = (gain_db+smooth_goal)*0.5;
+  lim = bound(mid >= 0 ? pull_up : push_down,0,6);
+  gain_step = (smooth_goal-gain_db)/max(srate*0.1,1)*(0.1+0.9*lim/6);
   measurement_fault ? gain_step = 0;
 );
 
@@ -188,6 +208,7 @@ function finish_hop() local(did_reset raw_k raw_r raw_samples) (
     hop_count >= 4 && window_samples > 0 && !measurement_fault ? (
       raw_k = max(window_k/window_samples,0);
       raw_r = max(window_r/window_samples,0);
+      update_short(raw_k,raw_r);
       add_block(raw_k,raw_r);
     );
     hop_k = hop_r = hop_samples = 0;
@@ -314,11 +335,14 @@ function pdef(i mn mx df st lg dc unit nm fnm hnt bip) local(b) (
 function pget(i f) local(b) ( b = PT + i * 12; b[f]; );
 
 pdef(1, -36, -6, -16, 0.1, 0, 1, "dB", "Hybrid Target", "Hybrid Target", "Level that the hybrid measurement is steered toward", 0);
-pdef(2, 0, 6, 6, 0.1, 0, 1, "dB", "Push Down", "Push Down", "Maximum attenuation applied when the level is above the target", 0);
-pdef(3, 0, 6, 6, 0.1, 0, 1, "dB", "Pull Up", "Pull Up", "Maximum boost applied when the level is below the target", 0);
-pdef(4, 0.1, 30, 3, 0.1, 1, 1, "s", "Smoothing", "Smoothing", "Moving-average window of the target gain, for both rises and falls", 0);
-pdef(5, -12, 12, 0, 0.1, 0, 1, "dB", "Calibration", "RMS Calibration", "Offset added to the RMS before it is mixed with Loudness", 1);
-pdef(6, 0, 100, 50, 1, 0, 0, "%", "Ratio", "RMS Ratio", "0% follows Loudness only; 100% follows RMS only", 0);
+pdef(2, 0, 6, 6, 0.1, 0, 1, "dB", "Push Down", "Push Down", "Maximum cut above the target. Larger values also move the gain faster", 0);
+pdef(3, 0, 6, 3, 0.1, 0, 1, "dB", "Pull Up", "Pull Up", "Maximum boost below the target. Larger values also move the gain faster", 0);
+pdef(5, -12, 12, 3, 0.1, 0, 1, "dB", "Calibration", "RMS Calibration", "Offset added to the RMS before it is mixed with Loudness", 1);
+pdef(6, 0, 100, 40, 1, 0, 0, "%", "Ratio", "RMS Ratio", "0% follows Loudness only; 100% follows RMS only", 0);
+pdef(11, 0, 100, 25, 1, 0, 0, "%", "Short Mix", "Short Mix", "0% follows the cumulative level; 100% follows the latest 400 ms", 0);
+
+// つまみの並び順（1〜6）に対応するパラメーター番号
+function pid(pos) ( pos == 4 ? 11 : pos; );
 
 function pq(i v) local(pmn pmx pst) (
   pmn = pget(i, 0); pmx = pget(i, 1); pst = pget(i, 3);
@@ -442,7 +466,7 @@ function fit_labels() local(i tw th wmax fs) (
   wmax = 1;
   i = 1;
   loop(6,
-    gfx_measurestr(pget(i, 7), tw, th); wmax = max(wmax, tw);
+    gfx_measurestr(pget(pid(i), 7), tw, th); wmax = max(wmax, tw);
     i += 1;
   );
   fs = max(rnd(11 * S), 6);
@@ -674,7 +698,7 @@ function knob_group(title p0 cnt x) local(k tw th) (
   gfx_line(x + tw + 12 * S, kg_y + 6 * S, x + cnt * kw - 2 * S, kg_y + 6 * S, 0);
   k = 0;
   loop(cnt,
-    knob_slot(p0 + k, x + k * kw, kg_y + 16 * S, kw, 65 * S);
+    knob_slot(pid(p0 + k), x + k * kw, kg_y + 16 * S, kw, 65 * S);
     k += 1;
   );
   x + cnt * kw + gg;
@@ -706,10 +730,10 @@ function ui_footer() local(p x tw th) (
     hint_id == 301 ? foot_hint(x, "Bypass", "Pass the input through unprocessed. Measurement keeps running") : (
     hint_id == 302 ? foot_hint(x, "Playback", "Reset the measurement when playback starts from stop or pause") : (
     hint_id == 303 ? foot_hint(x, "Reset", "Clear the measurement and start learning again") : (
-    hint_id == 305 ? foot_hint(x, "Settings", "Click to show or hide the target, gain limit, smoothing and RMS knobs inside the meter frame") : (
+    hint_id == 305 ? foot_hint(x, "Settings", "Click to show or hide the target, gain limit, short mix and RMS knobs inside the meter frame") : (
     hint_id == 311 ? foot_hint(x, "Loudness", "K-weighted loudness of the input, from gated 400 ms blocks") : (
     hint_id == 312 ? foot_hint(x, "Combined RMS", "RMS of the same blocks plus Calibration") : (
-    hint_id == 313 ? foot_hint(x, "Hybrid Level", "Loudness and RMS mixed by RMS Ratio. The gain steers it to the target") : (
+    hint_id == 313 ? foot_hint(x, "Hybrid Level", "Cumulative Loudness and RMS mixed by RMS Ratio. Short Mix blends in the latest 400 ms") : (
     hint_id ? (
       strcpy(#ft, pget(hint_id, 8));
       strcat(#ft, "  ");
