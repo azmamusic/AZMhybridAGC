@@ -222,6 +222,28 @@ static void test_short_mix()
           "Short Mix lets the gain recover after a quiet section");
 }
 
+// A louder short level cuts the gain at once; a quieter one lifts it only after a release.
+static void test_short_asymmetry()
+{
+    Effect loud;
+    Effect quiet;
+    for (Effect *e : {&loud, &quiet}) {
+        e->set(7, 0);
+        e->set(6, 100);
+        e->set(5, 0);
+        e->set(3, 6);
+        e->set(11, 100);
+    }
+    loud.run(20, -24);
+    loud.run(0.6, -12);
+    check(loud.var("gain_db") < 0, "loud passage cuts the gain within 0.6 seconds");
+    quiet.run(20, -10);
+    quiet.run(0.5, -30);
+    check(quiet.var("gain_db") < -3, "quiet passage does not lift the gain at once");
+    quiet.run(3.5, -30);
+    check(quiet.var("gain_db") > 5.5, "quiet passage lifts the gain after the release");
+}
+
 static void test_gate_and_silence()
 {
     Effect e;
@@ -378,6 +400,7 @@ int main()
     test_smoothing_and_limits();
     test_limit_speed();
     test_short_mix();
+    test_short_asymmetry();
     test_gate_and_silence();
     test_playback_reset();
     test_silence_timing_and_rate_change();

@@ -35,6 +35,7 @@ BR = 2600;
 FL1 = 4000; FL2 = 4002; FR1 = 4004; FR2 = 4006;
 SM = 4100;
 SMOOTH_N = 4; // 0.4 s of 100 ms hops
+SHORT_RELEASE_COEF = 1-exp(-0.1/2); // 2 s release of the short level, per 100 ms hop
 HK = 4500; HR = 4504; HS = 4508;
 LOG10 = log(10);
 EPS = pow(10,-30);
@@ -79,6 +80,7 @@ function reset_measurement() local(i) (
   hop_k = hop_r = hop_samples = hop_phase = 0;
   hop_index = hop_count = 0;
   have_measurement = have_short = 0;
+  short_env = short_env_valid = 0;
   measurement_fault = 0;
   loudness_db = rms_db = hybrid_db = 0;
   target_gain = 0;
@@ -140,7 +142,9 @@ function update_short(k_power r_power) local(l) (
   );
 );
 
-function update_target() local(mix sm level) (
+// The short level above the cumulative level is followed at once; below it the
+// offset is released slowly, so loud passages cut quickly and quiet ones barely lift.
+function update_target() local(mix sm level delta) (
   have_measurement && !measurement_fault ? (
     mix = bound(rms_ratio*0.01,0,1);
     hybrid_db = (1-mix)*loudness_db + mix*(rms_db+rms_cal);
@@ -148,7 +152,10 @@ function update_target() local(mix sm level) (
     have_short ? (
       sm = bound(short_mix*0.01,0,1);
       short_db = (1-mix)*short_loudness_db + mix*(short_rms_db+rms_cal);
-      level = (1-sm)*hybrid_db + sm*short_db;
+      delta = short_db - hybrid_db;
+      !short_env_valid || delta > short_env ? short_env = delta : short_env += (delta-short_env)*SHORT_RELEASE_COEF;
+      short_env_valid = 1;
+      level = hybrid_db + sm*short_env;
     );
     target_gain = bound(target-level,-push_down,pull_up);
   ) : (
@@ -168,7 +175,8 @@ function advance_smoothing() local(i sum goal mid lim) (
     sum += SM[i];
     i += 1;
   );
-  smooth_goal = sum/SMOOTH_N;
+  // Cutting is not averaged, so a loud passage lowers the gain immediately.
+  smooth_goal = min(sum/SMOOTH_N,goal);
   // The limit on the side the gain moves through sets its speed:
   // 6 dB is full speed, 0 dB is a tenth, so the gain can still return.
   mid = (gain_db+smooth_goal)*0.5;
