@@ -1,6 +1,10 @@
 desc:AZMhybridAGC
 tags:gain loudness dynamics stereo
 
+// - 単純なテキストだけなのでバグとかはあんまりないとおもいますが、利用は自己責任でお願いします
+// - 再配布やめてね
+// - 改変は歓迎です（真新しいアイデアでもないので）、ただし改善できたら是非教えてください
+
 options:no_meter
 
 slider1:target=-16<-36,-6,0.1>-Hybrid Target (dB)
