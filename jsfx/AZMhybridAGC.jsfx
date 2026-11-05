@@ -34,7 +34,7 @@ BK = 1300;
 BR = 2600;
 FL1 = 4000; FL2 = 4002; FR1 = 4004; FR2 = 4006;
 SM = 4100;
-SMOOTH_N = 4; // 0.4 s of 100 ms hops
+SMOOTH_N = 12; // 1.2 s of 100 ms hops
 SHORT_RELEASE_COEF = 1-exp(-0.1/2); // 2 s release of the short level, per 100 ms hop
 HK = 4500; HR = 4504; HS = 4508;
 LOG10 = log(10);
