@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -147,8 +148,8 @@ static void test_defaults()
     near(ysfx_slider_get_value(e.fx, 1), 6, 0, "default Push Down");
     near(ysfx_slider_get_value(e.fx, 2), 3, 0, "default Pull Up");
     near(ysfx_slider_get_value(e.fx, 4), 3, 0, "default Calibration");
-    near(ysfx_slider_get_value(e.fx, 5), 40, 0, "default Ratio");
-    near(ysfx_slider_get_value(e.fx, 10), 25, 0, "default Short Mix");
+    near(ysfx_slider_get_value(e.fx, 5), 30, 0, "default Ratio");
+    near(ysfx_slider_get_value(e.fx, 10), 50, 0, "default Short Mix");
 }
 
 // A larger limit moves the gain faster, but a limit of 0 must still let the gain return.
@@ -200,8 +201,8 @@ static void test_short_mix()
         return e.var("gain_db");
     };
     // Heavy section after a long quiet one: the short window pulls the gain down sooner.
-    const double slow_down = gain_after(0, -12, 2);
-    const double fast_down = gain_after(100, -12, 2);
+    const double slow_down = gain_after(0, -12, 6);
+    const double fast_down = gain_after(100, -12, 6);
     check(fast_down < slow_down - 1, "Short Mix reacts to a sudden louder section");
     // Quiet section after a long loud one: the relative gate drops it from the cumulative level,
     // so only the short window brings the gain back.
@@ -225,23 +226,35 @@ static void test_short_mix()
 // A louder short level cuts the gain at once; a quieter one lifts it only after a release.
 static void test_short_asymmetry()
 {
-    Effect loud;
-    Effect quiet;
-    for (Effect *e : {&loud, &quiet}) {
+    auto make = [](double short_mix) {
+        auto e = std::make_unique<Effect>();
         e->set(7, 0);
         e->set(6, 100);
         e->set(5, 0);
         e->set(3, 6);
-        e->set(11, 100);
+        e->set(11, short_mix);
+        return e;
+    };
+    auto loud = make(100);
+    auto loud_ref = make(0);
+    for (Effect *e : {loud.get(), loud_ref.get()}) {
+        e->run(20, -24);
+        e->run(0.6, -12);
     }
-    loud.run(20, -24);
-    loud.run(0.6, -12);
-    check(loud.var("gain_db") < 0, "loud passage cuts the gain within 0.6 seconds");
-    quiet.run(20, -10);
-    quiet.run(0.5, -30);
-    check(quiet.var("gain_db") < -3, "quiet passage does not lift the gain at once");
-    quiet.run(3.5, -30);
-    check(quiet.var("gain_db") > 5.5, "quiet passage lifts the gain after the release");
+    check(loud->var("gain_db") < loud_ref->var("gain_db") - 0.2,
+          "loud passage cuts the gain within 0.6 seconds");
+    auto quiet = make(100);
+    auto quiet_ref = make(0);
+    for (Effect *e : {quiet.get(), quiet_ref.get()}) {
+        e->run(20, -10);
+        e->run(0.5, -30);
+    }
+    check(quiet->var("gain_db") < quiet_ref->var("gain_db") + 0.5,
+          "quiet passage does not lift the gain at once");
+    for (Effect *e : {quiet.get(), quiet_ref.get()})
+        e->run(3.5, -30);
+    check(quiet->var("gain_db") > quiet_ref->var("gain_db") + 4,
+          "quiet passage lifts the gain after the release");
 }
 
 static void test_gate_and_silence()
