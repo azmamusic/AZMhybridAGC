@@ -1,6 +1,6 @@
 # アルゴリズム
 
-[`jsfx/AZMhybridAGC.jsfx`](../jsfx/AZMhybridAGC.jsfx) の信号処理と表示を説明します。
+[`jsfx/AZMhybridAGC.jsfx`](../jsfx/AZMhybridAGC.jsfx) の信号処理を説明します。画面と操作は [README](../README.md) を参照してください。
 
 ![ステレオ入力から K 重み付け・ブロック測定、ゲート、混合、目標ゲイン、平滑化を経て出力する信号経路](algorithm-flow.svg)
 
@@ -84,10 +84,4 @@ output_R = R * 10^(G / 20)
 
 ## Bypass
 
-Bypass が On の間、出力は約 5 ms の 1 次クロスフェードでドライ信号へ切り替わります。測定とゲイン計算は継続するため、解除時に状態は途切れません。ホスト側の FX バイパスは別の機能で、処理の継続はホストに依存します。
-
-## 表示
-
-上部の数値は、実際に適用されているゲイン（Bypass 中は 0 dB）です。下の LOUDNESS、COMBINED RMS（Calibration 適用後）、HYBRID LEVEL は測定値で、測定ブロックがまだない間は `--` を表示します。測定エラー中は `MEASUREMENT ERROR - RESET` を表示します。
-
-GUI は 2 倍解像度のバッファに描画してから縮小します。`SETTINGS` を開くと、メーターの枠の中をつまみに切り替えて表示するため、ウィンドウやメーターの大きさは開閉で変わりません。
+Bypass が On の間、出力は約 5 ms の 1 次クロスフェードでドライ信号へ切り替わります。測定とゲイン計算は継続するため、解除時に状態は途切れません。
