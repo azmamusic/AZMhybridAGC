@@ -58,20 +58,22 @@ Hybrid = (1 - m) * Loudness + m * (RMS + Calibration)
 
 ```text
 Short_Hybrid = (1 - m) * Short_Loudness + m * (Short_RMS + Calibration)
-Level        = (1 - s) * Hybrid + s * Short_Hybrid
+Offset       = Short_Hybrid - Hybrid
+Env          = Offset > Env ? Offset : Env + (Offset - Env) * (1 - exp(-0.1 / 2))   // 100 ms ごとに更新
+Level        = Hybrid + s * Env
 target_gain  = clamp(Hybrid_Target - Level, -Push_Down, +Pull_Up)
 ```
 
-`s` が 0 なら累積した値だけ、1 なら直近 400 ms だけに追従します。相対ゲートで累積値から外れる静かな区間や、累積値に反映されるまで時間のかかる大きな音量変化にも、ゲインが追従します。
+`s` が 0 なら累積した値だけ、1 なら直近 400 ms だけに追従します。`Env` は、直近 400 ms が累積値より大きいときはそのまま採用し、小さいときは時定数 2 秒で緩やかに追従します。そのため、大きな音には即座に反応し、小さな音へはゲインがすぐには持ち上がりません。相対ゲートで累積値から外れる静かな区間や、累積値に反映されるまで時間のかかる大きな音量変化にも、ゲインが追従します。
 
 測定できるブロックがまだない間、目標ゲインは 0 dB です。
 
 ## 平滑化と出力
 
-目標ゲインは 100 ms ごとに 4 個のリングバッファへ記録し、直近 0.4 秒の移動平均を求めます。この長さは固定です。実ゲインは、この平均値に向かって 100 ms かけて直線的に補間し、その速さに `Push Down` と `Pull Up` を反映します。
+目標ゲインは 100 ms ごとに 4 個のリングバッファへ記録し、直近 0.4 秒の移動平均を求めます。この長さは固定です。目標ゲインが平均値より低いとき（減衰方向）は、平均をとらず現在の目標ゲインをそのまま使います。実ゲインは、この値に向かって 100 ms かけて直線的に補間し、その速さに `Push Down` と `Pull Up` を反映します。
 
 ```text
-smooth_goal = mean(target_gain の直近 4 個)
+smooth_goal = min(mean(target_gain の直近 4 個), target_gain)
 limit       = clamp((G + smooth_goal) / 2 >= 0 ? Pull_Up : Push_Down, 0, 6)
 speed       = 0.1 + 0.9 * limit / 6
 gain_step   = (smooth_goal - G) / (0.1 * fs) * speed   // 1 サンプルあたり
