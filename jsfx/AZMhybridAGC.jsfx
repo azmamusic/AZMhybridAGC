@@ -209,8 +209,8 @@ SS = 2; // 画面外バッファに SS 倍の解像度で描き、縮小して�
 buf_w = buf_h = 0;
 
 // 設計サイズ。S = 1 のとき、ホストの初期ウィンドウ（@gfx の値）と一致する。
-// 高さは Settings を開いた状態を基準にし、メーターの大きさは開閉に関係なく同じにする。
-BW = 570; BH = 353;
+// Settings は閉じた状態の高さ。開くとメーターの上につまみを重ねるので、ウィンドウの大きさは変わらない。
+BW = 570; BH = 245;
 MT_H = 104; // メーター（ダークパネル）の高さ。Settings の開閉に関係なく一定
 
 C_BG = 0xFFFFFF; C_PANEL = 0xF3F5F9; C_TRACK = 0xDFE4EE; C_SLOT = 0xEEF1F7; C_RULE = 0xD5DBE8;
@@ -468,9 +468,9 @@ function ui_begin() (
   mg = 44 * S; // 全パーツ共通の左右余白（ヘッダー、メーター、欄、Settings、フッターの端をそろえる）
   ft_h = 22 * S; ft_y = ui_h - 18 * S - ft_h;
   set_on = settings_open >= 0.5;
-  sec_h = (set_on ? 104 : 22) * S;
   gg = 16 * S;
-  kw = (ui_w - 2 * mg - gg) / 6;
+  kp = 16 * S; // メーターの枠からつまみまでの余白
+  kw = (ui_w - 2 * (mg + kp) - gg) / 6;
   fit_labels();
 
   // メーターは上端から固定の大きさ。Settings の開閉で変わるのは、その下の部分だけ。
@@ -480,8 +480,7 @@ function ui_begin() (
   pl_h = MT_H * S;
   pl_b = pl_y + pl_h;
   fd_y = pl_b + 12 * S; // 測定値の欄
-  kz_y = fd_y + 20 * S + 14 * S; // Settings セクションの上端
-  kg_y = kz_y + 20 * S; // グループ名の行
+  kg_y = pl_y + 12 * S; // つまみのグループ名の行（メーターの枠の中に置く）
 );
 
 function ui_end() (
@@ -515,11 +514,13 @@ function ui_header() local(tw th) (
   gfx_measurestr("AZMhybridAGC", tw, th);
   txt("AZMhybridAGC", mg, 15 * S, tw + 4 * S, 28 * S, 4);
   ui_pill(ui_w - mg - 104 * S, 18 * S, 104 * S, 26 * S, "BYPASS", bypass >= 0.5, 301, 0) ? toggle(9);
+  ui_pill(ui_w - mg - 216 * S, 18 * S, 104 * S, 26 * S, "SETTINGS", set_on, 305, 0) ? ( toggle(10); set_on = !set_on; );
 );
 
 // 目標ゲインでなく、実際に出力へ適用されているゲイン（dB）を大きく表示する。
 function ui_meter() local(px py pw ph bx n ux gw gh uw uh cx cy v r) (
   setc(C_PLOT, 1); rrect(pl_x, pl_y, pl_w, pl_h, 12 * S);
+  set_on ? ( 0; ) : (
 
   // 左のボタン 3 つ
   pw = 112 * S; ph = 26 * S;
@@ -552,6 +553,7 @@ function ui_meter() local(px py pw ph bx n ux gw gh uw uh cx cy v r) (
   measurement_fault ? (
     font(4); setc(C_YAM, 1);
     txt("MEASUREMENT ERROR - RESET", bx, pl_b - 22 * S, pl_x + pl_w - bx, 14 * S, 1);
+  );
   );
 );
 
@@ -610,7 +612,7 @@ function knob_draw(cx cy rad n bip hot act) local(ang rin rm w a0 a1) (
   w = 4 * S;
   rin = rad - w;
   rm = rad - w * 0.5;
-  setc(C_TRACK, 1);
+  setc(C_GRID2, 1);
   arcw(cx, cy, rin, rad, -2.356194490192345, 2.356194490192345);
   arc_cap(cx, cy, rm, -2.356194490192345, w);
   arc_cap(cx, cy, rm, 2.356194490192345, w);
@@ -620,8 +622,8 @@ function knob_draw(cx cy rad n bip hot act) local(ang rin rm w a0 a1) (
   arcw(cx, cy, rin, rad, a0, a1);
   arc_cap(cx, cy, rm, a0, w);
   arc_cap(cx, cy, rm, a1, w);
-  setc(C_TEXT, 1); gfx_circle(cx, cy, rin - 2.4 * S, 1, 1);
-  setc(C_BG, 1);
+  setc(C_PANEL, 1); gfx_circle(cx, cy, rin - 2.4 * S, 1, 1);
+  setc(C_PLOT, 1);
   sline(cx + sin(ang) * 2 * S, cy - cos(ang) * 2 * S, cx + sin(ang) * (rin - 5 * S), cy - cos(ang) * (rin - 5 * S), 2.4 * S);
 );
 
@@ -645,8 +647,8 @@ function knob_slot(i sx sy sw sh) local(hot act ed ined n cx cy rad vy) (
 
   act = drag_id == i;
   n = p_norm(i, slider(i));
-  hot || act ? ( setc(C_SLOT, 1); rrect(sx + 1 * S, sy, sw - 2 * S, sh - 4 * S, 8 * S); );
-  font(7); setc(C_TEXT, 1);
+  hot || act ? ( setc(0x2A3C68, 1); rrect(sx + 1 * S, sy, sw - 2 * S, sh - 4 * S, 8 * S); );
+  font(7); setc(C_BG, 1);
   txt(pget(i, 7), sx, sy + 2 * S, sw, 12 * S, 1 | 4);
   rad = 13 * S; cx = sx + sw * 0.5; cy = sy + 19 * S + rad;
   knob_draw(cx, cy, rad, n, pget(i, 10), hot, act);
@@ -655,16 +657,16 @@ function knob_slot(i sx sy sw sh) local(hot act ed ined n cx cy rad vy) (
     strcpy(#kv, fmt(slider(i), pget(i, 5)));
     strcat(#kv, " ");
     strcat(#kv, pget(i, 6));
-    font(1); setc(act || hot ? C_TEXT : C_DIM, 1);
+    font(1); setc(act || hot ? C_BG : C_SUB, 1);
     txt(#kv, sx, vy, sw, 15 * S, 1 | 4);
   );
 );
 
 function knob_group(title p0 cnt x) local(k tw th) (
-  font(4); setc(C_DIM, 1);
+  font(4); setc(C_SUB, 1);
   gfx_measurestr(title, tw, th);
   txt(title, x + 2 * S, kg_y, tw + 8 * S, 12 * S, 4);
-  setc(C_RULE, 1);
+  setc(C_GRID2, 1);
   gfx_line(x + tw + 12 * S, kg_y + 6 * S, x + cnt * kw - 2 * S, kg_y + 6 * S, 0);
   k = 0;
   loop(cnt,
@@ -674,30 +676,9 @@ function knob_group(title p0 cnt x) local(k tw th) (
   x + cnt * kw + gg;
 );
 
-// Settings の見出し。クリックで開閉する（開閉状態は settings_open に保存される）。
-function ui_settings_head() local(hot tw th cx cy) (
-  font(6);
-  gfx_measurestr("SETTINGS", tw, th);
-  hot = !drag_id && !edit_id && mx >= mg && mx < mg + tw + 34 * S && my >= kz_y && my < kz_y + 18 * S;
-  hot ? ( hint_id = 305; );
-  ldown && hot ? ( toggle(10); set_on = !set_on; );
-  cx = mg + 9 * S; cy = kz_y + 9 * S;
-  setc(hot ? C_TEXT : C_DIM, 1);
-  set_on ? (
-    gfx_triangle(cx - 4.5 * S, cy - 2.5 * S, cx + 4.5 * S, cy - 2.5 * S, cx, cy + 3.5 * S);
-  ) : (
-    gfx_triangle(cx - 2.5 * S, cy - 4.5 * S, cx - 2.5 * S, cy + 4.5 * S, cx + 3.5 * S, cy);
-  );
-  setc(C_TEXT, 1);
-  txt("SETTINGS", mg + 22 * S, kz_y, tw + 8 * S, 18 * S, 4);
-  setc(C_RULE, 1);
-  gfx_line(mg + 30 * S + tw, kz_y + 9 * S, ui_w - mg, kz_y + 9 * S, 0);
-);
-
 function ui_knobs() local(x) (
-  ui_settings_head();
   set_on ? (
-    x = mg;
+    x = mg + kp;
     x = knob_group("BEHAVIOR", 1, 4, x);
     x = knob_group("RMS", 5, 2, x);
   );
@@ -721,7 +702,7 @@ function ui_footer() local(p x tw th) (
     hint_id == 301 ? foot_hint(x, "Bypass", "Pass the input through unprocessed. Measurement keeps running") : (
     hint_id == 302 ? foot_hint(x, "Playback", "Reset the measurement when playback starts from stop or pause") : (
     hint_id == 303 ? foot_hint(x, "Reset", "Clear the measurement and start learning again") : (
-    hint_id == 305 ? foot_hint(x, "Settings", "Click to show or hide the target, gain limit, smoothing and RMS knobs") : (
+    hint_id == 305 ? foot_hint(x, "Settings", "Click to show or hide the target, gain limit, smoothing and RMS knobs inside the meter frame") : (
     hint_id == 311 ? foot_hint(x, "Loudness", "K-weighted loudness of the input, from gated 400 ms blocks") : (
     hint_id == 312 ? foot_hint(x, "Combined RMS", "RMS of the same blocks plus Calibration") : (
     hint_id == 313 ? foot_hint(x, "Hybrid Level", "Loudness and RMS mixed by RMS Ratio. The gain steers it to the target") : (
@@ -789,7 +770,7 @@ applied_gain = 1+(pow(10,gain_db/20)-1)*(1-bypass_mix);
 spl0 = in_l*applied_gain;
 spl1 = in_r*applied_gain;
 
-@gfx 570 353
+@gfx 570 245
 ui_w = gfx_w * SS; ui_h = gfx_h * SS;
 ui_w != buf_w || ui_h != buf_h ? ( gfx_setimgdim(0, ui_w, ui_h); buf_w = ui_w; buf_h = ui_h; );
 gfx_dest = 0;
