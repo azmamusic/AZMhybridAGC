@@ -343,12 +343,12 @@ function pdef(i mn mx df st lg dc unit nm fnm hnt bip) local(b) (
 );
 function pget(i f) local(b) ( b = PT + i * 12; b[f]; );
 
-pdef(1, -36, -6, -16, 0.1, 0, 1, "dB", "Hybrid Target", "Hybrid Target", "Level that the hybrid measurement is steered toward", 0);
+pdef(1, -36, -6, -15, 0.1, 0, 1, "dB", "Hybrid Target", "Hybrid Target", "Level that the hybrid measurement is steered toward", 0);
 pdef(2, 0, 6, 6, 0.1, 0, 1, "dB", "Push Down", "Push Down", "Maximum cut above the target. Larger values also move the gain faster", 0);
 pdef(3, 0, 6, 3, 0.1, 0, 1, "dB", "Pull Up", "Pull Up", "Maximum boost below the target. Larger values also move the gain faster", 0);
 pdef(5, -12, 12, 3, 0.1, 0, 1, "dB", "Calibration", "RMS Calibration", "Offset added to the RMS before it is mixed with Loudness", 1);
 pdef(6, 0, 100, 30, 1, 0, 0, "%", "Ratio", "RMS Ratio", "0% follows Loudness only; 100% follows RMS only", 0);
-pdef(11, 0, 100, 50, 1, 0, 0, "%", "Short Mix", "Short Mix", "0% follows the cumulative level; 100% blends in the latest 400 ms at up to 30%", 0);
+pdef(11, 0, 100, 40, 1, 0, 0, "%", "Short Mix", "Short Mix", "0% follows the cumulative level; 100% blends in the latest 400 ms at up to 30%", 0);
 
 // つまみの並び順（1〜6）に対応するパラメーター番号
 function pid(pos) ( pos == 4 ? 11 : pos; );
